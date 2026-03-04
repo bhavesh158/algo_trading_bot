@@ -1,0 +1,150 @@
+# ============================================================
+# Automated AI Trading System — Default Configuration
+# ============================================================
+
+system:
+  mode: paper  # paper | live
+  timezone: Asia/Kolkata
+  log_level: INFO
+  data_dir: ./data_store
+  market: NSE
+
+# --- Capital & Account ---
+account:
+  initial_capital: 100000.0
+  currency: INR
+
+# --- Market Hours (IST) ---
+schedule:
+  pre_market_start: "08:45"
+  market_open: "09:15"
+  market_close: "15:30"
+  pre_close_start: "15:15"
+  post_market_end: "16:00"
+
+# --- Market Data ---
+market_data:
+  provider: yahoo
+  timeframes:
+    - 1m
+    - 5m
+    - 15m
+  history_days: 30
+  update_interval_seconds: 5
+
+# --- Stock Selection ---
+selection:
+  min_volume: 500000
+  min_price: 50.0
+  max_price: 10000.0
+  max_watchlist_size: 20
+  index_symbols:
+    - "^NSEI"   # Nifty 50
+    - "^NSEBANK"  # Bank Nifty
+
+# --- Strategy Engine ---
+strategies:
+  enabled:
+    - mean_reversion
+    - momentum_breakout
+    - opening_range_breakout
+  default_confidence_threshold: 0.6
+
+# --- Individual Strategy Configs ---
+mean_reversion:
+  lookback_period: 20
+  entry_zscore: -2.0
+  exit_zscore: 0.0
+  stop_zscore: -3.0
+
+momentum_breakout:
+  lookback_period: 20
+  volume_multiplier: 1.5
+  breakout_threshold_pct: 1.0
+  atr_multiplier_stop: 2.0
+  atr_multiplier_target: 3.0
+
+opening_range_breakout:
+  opening_range_minutes: 15
+  breakout_buffer_pct: 0.1
+  atr_multiplier_stop: 1.5
+  atr_multiplier_target: 2.5
+
+# --- AI Analysis ---
+ai_analysis:
+  enabled: true
+  min_confidence_boost: 0.1
+  max_confidence_boost: 0.3
+  lookback_candles: 50
+
+# --- Market Regime ---
+regime_detection:
+  enabled: true
+  adx_trending_threshold: 25
+  volatility_high_percentile: 80
+  volatility_low_percentile: 20
+  lookback_period: 20
+
+# --- Risk Management ---
+risk:
+  max_risk_per_trade_pct: 1.0       # Max 1% of capital per trade
+  max_open_positions: 5
+  max_daily_loss_pct: 3.0           # Stop trading if daily loss exceeds 3%
+  max_total_exposure_pct: 50.0      # Max 50% of capital deployed
+  max_single_stock_exposure_pct: 15.0
+  min_risk_reward_ratio: 1.5
+
+# --- Position Sizing ---
+position_sizing:
+  method: volatility_adjusted  # fixed | volatility_adjusted | kelly
+  fixed_quantity: 10
+  volatility_lookback: 14
+  max_position_pct: 10.0  # Max position size as % of capital
+
+# --- Drawdown Protection ---
+drawdown:
+  warning_threshold_pct: 2.0
+  reduce_size_threshold_pct: 3.0
+  pause_trading_threshold_pct: 5.0
+  size_reduction_factor: 0.5
+
+# --- News & Event Awareness ---
+news:
+  enabled: false  # Enable when news API is configured
+  pause_minutes_before_event: 15
+  pause_minutes_after_event: 15
+
+# --- Volatility Safeguards ---
+volatility_safeguards:
+  enabled: true
+  max_intraday_move_pct: 3.0  # Pause if index moves > 3% intraday
+  spike_detection_window: 5     # minutes
+  spike_threshold_pct: 1.5
+
+# --- Broker (Live Trading) ---
+broker:
+  adapter: zerodha
+  # Credentials should be stored securely (env vars or secrets manager)
+  # api_key: ${BROKER_API_KEY}
+  # api_secret: ${BROKER_API_SECRET}
+
+# --- Paper Trading ---
+paper_trading:
+  slippage_pct: 0.05
+  commission_per_trade: 20.0
+  fill_delay_seconds: 1
+
+# --- Reporting ---
+reporting:
+  daily_report: true
+  report_dir: ./reports
+  format: json  # json | csv
+
+# --- Alerts ---
+alerts:
+  enabled: true
+  channels:
+    - console  # console | file | webhook
+  alert_on_trade: true
+  alert_on_risk_breach: true
+  alert_on_error: true
