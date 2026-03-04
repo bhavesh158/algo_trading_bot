@@ -21,6 +21,8 @@ env/
 # System data and reports
 data_store/
 reports/
+crypto_data/
+crypto_reports/
 *.log
 
 # Secrets

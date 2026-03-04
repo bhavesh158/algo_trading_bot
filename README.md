@@ -1,8 +1,11 @@
 # Automated AI Trading System
 
-An automated intraday trading system for the **Indian stock market (NSE)**. It selects stocks from the Nifty 50 universe, runs multiple trading strategies, manages risk, and executes orders — all autonomously during market hours.
+Two independent automated trading systems in one repo:
 
-Supports **paper trading** (simulated) and **live trading** via Angel One or Zerodha.
+- **Stocks** — Intraday trading on NSE (Nifty 50), session-based (9:15 AM – 3:30 PM IST)
+- **Crypto** — 24/7 cryptocurrency trading via Binance (BTC, ETH, BNB, SOL)
+
+Both support **paper trading** (simulated) and **live trading** via broker/exchange APIs.
 
 ---
 
@@ -19,11 +22,14 @@ source venv/bin/activate
 # 3. Install dependencies
 pip install -r requirements.txt
 
-# 4. Run in paper trading mode (no broker account needed)
-python main.py --mode paper
+# 4. Run stock trading (paper mode — no broker account needed)
+python -m stocks.main --mode paper
+
+# 5. Run crypto trading (paper mode — no exchange account needed)
+python -m crypto.crypto_main --mode paper
 ```
 
-That's it — the system will start paper trading during NSE market hours (9:15 AM – 3:30 PM IST).
+The stock system trades during NSE market hours; the crypto system runs 24/7.
 
 ---
 
@@ -69,12 +75,27 @@ ALGO_TRADING__account__initial_capital=200000
 ALGO_TRADING__risk__max_risk_per_trade_pct=0.5
 ```
 
-### YAML Config
+#### Crypto exchange credentials
 
-All default settings live in `config/default_config.yaml`. You can also pass a custom config file:
+| Variable | Description |
+|---|---|
+| `EXCHANGE_API_KEY` | Binance API key |
+| `EXCHANGE_API_SECRET` | Binance API secret |
+| `EXCHANGE_PASSWORD` | Exchange password (if required) |
+
+Crypto config overrides use the `CRYPTO_TRADING__` prefix:
 
 ```bash
-python main.py --mode paper --config my_config.yaml
+CRYPTO_TRADING__account__initial_capital=5000
+```
+
+### YAML Config
+
+Default settings live in `stocks/config/default_config.yaml` and `crypto/config/default_config.yaml`. You can pass a custom config file:
+
+```bash
+python -m stocks.main --mode paper --config my_config.yaml
+python -m crypto.crypto_main --mode paper --config my_crypto_config.yaml
 ```
 
 The custom file is merged on top of defaults — you only need to include the values you want to change.
@@ -97,21 +118,22 @@ The custom file is merged on top of defaults — you only need to include the va
 Simulates order execution with configurable slippage and commissions. No broker account required.
 
 ```bash
-python main.py --mode paper
+python -m stocks.main --mode paper
+python -m crypto.crypto_main --mode paper
 ```
 
 **Recommended:** Run in paper mode for at least 2–4 weeks to validate strategy performance before going live.
 
 ### Live Trading
 
-Executes real orders through your broker account.
+Executes real orders through your broker/exchange account.
 
 ```bash
-# 1. Fill in your .env with broker credentials
-# 2. Set broker adapter in config/default_config.yaml:
-#    broker.adapter: angelone   (or zerodha)
-# 3. Run
-python main.py --mode live
+# Stocks (Angel One / Zerodha)
+python -m stocks.main --mode live
+
+# Crypto (Binance)
+python -m crypto.crypto_main --mode live
 ```
 
 **Pre-flight checks:** The system validates that all required credentials are present before starting in live mode. Missing credentials will cause a clear error at startup.
@@ -132,7 +154,7 @@ python main.py --mode live
    BROKER_TOTP_SECRET=your_totp_secret_here
    ```
 6. **Set broker in config:** Ensure `broker.adapter: angelone` in `config/default_config.yaml` (this is the default)
-7. **Run:** `python main.py --mode live`
+7. **Run:** `python -m stocks.main --mode live`
 
 ---
 
@@ -186,59 +208,41 @@ Each signal goes through:
 
 ```
 algo_trading_bot/
-├── main.py                          # CLI entrypoint & orchestrator
-├── config/
-│   ├── settings.py                  # YAML + .env config loader
-│   └── default_config.yaml          # All default settings
-├── core/
-│   ├── enums.py                     # OrderSide, OrderType, TradingMode, etc.
-│   ├── models.py                    # Candle, Signal, Order, Position, Trade
-│   ├── events.py                    # Event types (SignalEvent, OrderEvent, etc.)
-│   └── event_bus.py                 # Publish-subscribe event bus
-├── data/
-│   ├── market_data_engine.py        # Candle fetching + technical indicators
-│   ├── data_provider.py             # Abstract data provider interface
-│   └── providers/
-│       └── yahoo_provider.py        # Yahoo Finance data provider
-├── selection/
-│   └── stock_selector.py            # Nifty 50 scoring & watchlist builder
-├── strategy/
-│   ├── base_strategy.py             # Abstract strategy interface
-│   ├── strategy_engine.py           # Runs all strategies, aggregates signals
-│   └── strategies/
-│       ├── mean_reversion.py
-│       ├── momentum_breakout.py
-│       └── opening_range_breakout.py
-├── analysis/
-│   ├── ai_analysis.py               # AI-based confidence adjustment
-│   ├── regime_detector.py           # Trending / ranging / volatile detection
-│   ├── multi_timeframe.py           # Cross-timeframe signal confirmation
-│   └── news_monitor.py              # Volatility safeguards
-├── risk/
-│   ├── risk_manager.py              # Trade approval, exposure checks
-│   ├── position_sizer.py            # Volatility-adjusted position sizing
-│   └── drawdown_monitor.py          # Drawdown alerts & auto-protection
-├── execution/
-│   ├── order_executor.py            # Routes orders (paper / live)
-│   ├── paper_trader.py              # Simulated execution with slippage
-│   └── broker_adapters/
-│       ├── base_adapter.py          # Abstract broker interface
-│       ├── angelone_adapter.py      # Angel One SmartAPI adapter
-│       └── zerodha_adapter.py       # Zerodha Kite adapter
-├── portfolio/
-│   ├── portfolio_manager.py         # Tracks positions, P&L, capital
-│   └── performance_monitor.py       # Win rate, Sharpe, drawdown metrics
-├── scheduler/
-│   └── trading_scheduler.py         # Session controller (pre-market → close)
-├── reporting/
-│   ├── report_generator.py          # Daily JSON reports
-│   └── alert_manager.py             # Console/file alerts on trades & errors
-├── utils/
-│   ├── logger.py                    # Logging setup
-│   └── security.py                  # Credential validation
+├── stocks/                          # NSE stock trading system
+│   ├── main.py                      # Stock CLI entrypoint
+│   ├── config/
+│   │   ├── settings.py              # YAML + .env config loader
+│   │   └── default_config.yaml      # Stock default settings
+│   ├── core/                        # Enums, models, event bus
+│   ├── data/                        # Market data (Yahoo Finance)
+│   ├── selection/                   # Nifty 50 stock selector
+│   ├── strategy/                    # Mean reversion, momentum, ORB
+│   ├── analysis/                    # AI analysis, regime detection
+│   ├── risk/                        # Risk manager, position sizer
+│   ├── execution/                   # Paper trader, Angel One, Zerodha
+│   ├── portfolio/                   # Portfolio & performance tracking
+│   ├── scheduler/                   # NSE session scheduler
+│   ├── reporting/                   # Reports & alerts
+│   └── utils/                       # Logging, security
+├── crypto/                          # 24/7 crypto trading system
+│   ├── crypto_main.py               # Crypto CLI entrypoint
+│   ├── config/                      # Crypto config & settings
+│   ├── core/                        # Crypto models, enums, event bus
+│   ├── data/                        # Exchange data via ccxt
+│   ├── selection/                   # Pair selector & scoring
+│   ├── strategy/                    # Crypto-specific strategies
+│   ├── analysis/                    # Sentiment, on-chain, regime
+│   ├── risk/                        # Crypto risk & position sizing
+│   ├── execution/                   # Paper & live exchange execution
+│   ├── portfolio/                   # Crypto portfolio tracking
+│   ├── scheduler/                   # 24/7 cycle scheduler
+│   ├── reporting/                   # Crypto reports & alerts
+│   └── utils/                       # Logging, security
+├── .env                             # Credentials (git-ignored)
 ├── .env.example                     # Environment variable template
 ├── .gitignore
-└── requirements.txt
+├── requirements.txt
+└── README.md
 ```
 
 ---
@@ -246,10 +250,16 @@ algo_trading_bot/
 ## CLI Options
 
 ```bash
-python main.py --mode paper              # Paper trading (default)
-python main.py --mode live               # Live trading
-python main.py --config my_config.yaml   # Custom config file
-python main.py --log-level DEBUG         # Override log level
+# Stock trading
+python -m stocks.main --mode paper              # Paper trading (default)
+python -m stocks.main --mode live               # Live trading
+python -m stocks.main --config my_config.yaml   # Custom config file
+python -m stocks.main --log-level DEBUG         # Override log level
+
+# Crypto trading
+python -m crypto.crypto_main --mode paper       # Paper trading
+python -m crypto.crypto_main --mode live        # Live trading
+python -m crypto.crypto_main --log-level DEBUG  # Override log level
 ```
 
 ---

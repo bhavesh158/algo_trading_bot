@@ -1,0 +1,11 @@
+# Core
+pyyaml>=6.0
+python-dotenv>=1.0
+
+# Market Data & Exchange
+ccxt>=4.0
+pandas>=2.0
+numpy>=1.24
+
+# Testing
+pytest>=7.0

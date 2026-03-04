@@ -1,0 +1,155 @@
+"""Portfolio Manager (PRD §14).
+
+Tracks open positions, capital, exposure, and P&L.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections import deque
+from datetime import datetime, timezone
+from typing import Any, Callable, Optional
+
+from crypto.core.enums import OrderSide, PositionStatus
+from crypto.core.event_bus import EventBus
+from crypto.core.events import PortfolioUpdateEvent
+from crypto.core.models import Order, Position, PortfolioState, Trade
+
+logger = logging.getLogger(__name__)
+
+
+class PortfolioManager:
+    """Tracks positions, capital, and portfolio state."""
+
+    def __init__(self, config: dict[str, Any], event_bus: EventBus) -> None:
+        self.config = config
+        self.event_bus = event_bus
+
+        initial = config.get("account", {}).get("initial_capital", 1000.0)
+        self._total_capital = initial
+        self._available_capital = initial
+        self._peak_capital = initial
+
+        self._positions: dict[str, Position] = {}  # symbol -> Position
+        self._closed_trades: list[Trade] = []
+        self._rolling_pnl = 0.0
+        # Track recent P&L entries for rolling window
+        self._pnl_entries: deque = deque(maxlen=10000)
+
+        logger.info("PortfolioManager initialized (capital=%.2f)", initial)
+
+    def get_state(self) -> PortfolioState:
+        """Get current portfolio snapshot."""
+        open_positions = [p for p in self._positions.values() if p.status == PositionStatus.OPEN]
+        total_exposure = sum(p.notional_value for p in open_positions)
+
+        current_capital = self._available_capital + sum(p.unrealized_pnl for p in open_positions)
+        self._peak_capital = max(self._peak_capital, current_capital)
+        current_dd = 0.0
+        if self._peak_capital > 0:
+            current_dd = (self._peak_capital - current_capital) / self._peak_capital * 100
+
+        return PortfolioState(
+            total_capital=self._total_capital,
+            available_capital=self._available_capital,
+            positions=list(self._positions.values()),
+            rolling_pnl=self._rolling_pnl,
+            rolling_pnl_pct=(self._rolling_pnl / self._total_capital * 100) if self._total_capital > 0 else 0,
+            total_exposure=total_exposure,
+            current_drawdown=current_dd,
+            peak_capital=self._peak_capital,
+        )
+
+    def open_position(self, order: Order) -> Position:
+        """Create a new position from a filled order."""
+        position = Position(
+            symbol=order.symbol,
+            side=order.side,
+            quantity=order.filled_quantity,
+            entry_price=order.filled_price,
+            current_price=order.filled_price,
+            stop_loss=order.stop_price,
+            strategy_id=order.strategy_id,
+            entry_order_id=order.id,
+        )
+
+        notional = order.filled_price * order.filled_quantity
+        self._available_capital -= notional
+        self._positions[order.symbol] = position
+
+        logger.info(
+            "Position opened: %s %s qty=%.6f @ %.4f",
+            order.side.name, order.symbol, order.filled_quantity, order.filled_price,
+        )
+        self._publish_update()
+        return position
+
+    def close_position(self, symbol: str, exit_price: float, commission: float = 0.0) -> Optional[Trade]:
+        """Close an open position and record the trade."""
+        pos = self._positions.get(symbol)
+        if not pos or pos.status != PositionStatus.OPEN:
+            return None
+
+        pos.status = PositionStatus.CLOSED
+        pos.closed_at = datetime.now(timezone.utc)
+        pos.current_price = exit_price
+
+        trade = Trade(
+            symbol=symbol,
+            side=pos.side,
+            quantity=pos.quantity,
+            entry_price=pos.entry_price,
+            exit_price=exit_price,
+            strategy_id=pos.strategy_id,
+            entry_time=pos.opened_at,
+            exit_time=pos.closed_at,
+            commission=commission,
+        )
+
+        # Return capital + P&L
+        notional = pos.entry_price * pos.quantity
+        self._available_capital += notional + trade.pnl
+        self._total_capital += trade.pnl
+        self._rolling_pnl += trade.pnl
+        self._pnl_entries.append((datetime.now(timezone.utc), trade.pnl))
+
+        self._closed_trades.append(trade)
+        del self._positions[symbol]
+
+        logger.info(
+            "Position closed: %s %s pnl=%.4f (%.2f%%)",
+            symbol, trade.side.name, trade.pnl, trade.pnl_pct,
+        )
+        self._publish_update()
+        return trade
+
+    def update_position_price(self, symbol: str, price: float) -> None:
+        pos = self._positions.get(symbol)
+        if pos and pos.status == PositionStatus.OPEN:
+            pos.current_price = price
+
+    def get_open_positions(self) -> dict[str, Position]:
+        return {s: p for s, p in self._positions.items() if p.status == PositionStatus.OPEN}
+
+    def close_all_positions(self, price_fn: Callable[[str], float]) -> None:
+        """Close all open positions using provided price function."""
+        for symbol in list(self._positions.keys()):
+            pos = self._positions[symbol]
+            if pos.status == PositionStatus.OPEN:
+                price = price_fn(symbol)
+                if price > 0:
+                    self.close_position(symbol, price)
+
+    def reset_rolling_pnl(self) -> None:
+        self._rolling_pnl = 0.0
+        self._pnl_entries.clear()
+        logger.info("Rolling P&L reset")
+
+    def _publish_update(self) -> None:
+        state = self.get_state()
+        self.event_bus.publish(PortfolioUpdateEvent(
+            total_capital=state.total_capital,
+            available_capital=state.available_capital,
+            rolling_pnl=state.rolling_pnl,
+            open_positions=state.open_position_count,
+        ))
