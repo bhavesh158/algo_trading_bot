@@ -42,7 +42,8 @@ class TradingSystem:
 
         # Safety check for live trading
         if self.mode == TradingMode.LIVE:
-            issues = validate_live_trading_prerequisites()
+            broker_name = get_nested(self.config, "broker", "adapter") or "angelone"
+            issues = validate_live_trading_prerequisites(broker=broker_name)
             if issues:
                 for issue in issues:
                     logger.error("Live trading prerequisite failed: %s", issue)
@@ -106,11 +107,42 @@ class TradingSystem:
             self.scheduler,
         ]
 
+        # Wire broker adapter for live trading
+        if self.mode == TradingMode.LIVE:
+            self._setup_broker_adapter()
+
         # Give scheduler a reference to this system for orchestration
         self.scheduler.set_trading_system(self)
 
         logger.info("All components initialized (%d total)", len(self._components))
         logger.info("Event bus: %d subscriptions active", self.event_bus.subscriber_count)
+
+    def _setup_broker_adapter(self) -> None:
+        """Initialize the broker adapter for live trading."""
+        import os
+        broker_name = get_nested(self.config, "broker", "adapter") or "zerodha"
+
+        if broker_name == "angelone":
+            from execution.broker_adapters.angelone_adapter import AngelOneAdapter
+            adapter = AngelOneAdapter(
+                api_key=os.environ.get("BROKER_API_KEY", ""),
+                client_id=os.environ.get("BROKER_CLIENT_ID", ""),
+                password=os.environ.get("BROKER_PASSWORD", ""),
+                totp_secret=os.environ.get("BROKER_TOTP_SECRET", ""),
+            )
+        else:
+            from execution.broker_adapters.zerodha_adapter import ZerodhaAdapter
+            adapter = ZerodhaAdapter(
+                api_key=os.environ.get("BROKER_API_KEY", ""),
+                api_secret=os.environ.get("BROKER_API_SECRET", ""),
+                access_token=os.environ.get("BROKER_ACCESS_TOKEN", ""),
+            )
+
+        if adapter.connect():
+            self.order_executor.set_broker_adapter(adapter)
+            logger.info("Broker adapter connected: %s", broker_name)
+        else:
+            raise RuntimeError(f"Failed to connect broker adapter: {broker_name}")
 
     def run(self) -> None:
         """Start the trading system main loop."""

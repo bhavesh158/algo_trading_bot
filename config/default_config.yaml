@@ -123,10 +123,10 @@ volatility_safeguards:
 
 # --- Broker (Live Trading) ---
 broker:
-  adapter: zerodha
-  # Credentials should be stored securely (env vars or secrets manager)
-  # api_key: ${BROKER_API_KEY}
-  # api_secret: ${BROKER_API_SECRET}
+  adapter: angelone  # zerodha | angelone
+  # Credentials are loaded from environment variables:
+  #   Angel One: BROKER_API_KEY, BROKER_CLIENT_ID, BROKER_PASSWORD, BROKER_TOTP_SECRET
+  #   Zerodha:   BROKER_API_KEY, BROKER_API_SECRET, BROKER_ACCESS_TOKEN
 
 # --- Paper Trading ---
 paper_trading:

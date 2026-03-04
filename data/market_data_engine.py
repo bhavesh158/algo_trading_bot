@@ -73,8 +73,25 @@ class MarketDataEngine:
     # Data fetching
     # ------------------------------------------------------------------
 
+    def load_daily_data(self, symbols: list[str]) -> None:
+        """Fetch daily (D1) data for stock selection scoring.
+
+        This is separate from load_historical_data because the configured
+        intraday timeframes (1m, 5m, 15m) don't include D1, but the stock
+        selector needs daily data for volume/volatility/trend scoring.
+        """
+        start = datetime.now() - timedelta(days=self._history_days)
+        loaded = 0
+        for symbol in symbols:
+            df = self.provider.get_historical_data(symbol, Timeframe.D1, start)
+            if not df.empty:
+                self._data[symbol][Timeframe.D1] = df
+                self._compute_indicators(symbol, Timeframe.D1)
+                loaded += 1
+        logger.info("Loaded daily data for %d/%d symbols", loaded, len(symbols))
+
     def load_historical_data(self, symbols: list[str]) -> None:
-        """Fetch historical data for all symbols and timeframes."""
+        """Fetch historical data for all symbols and configured timeframes."""
         start = datetime.now() - timedelta(days=self._history_days)
         for symbol in symbols:
             for tf in self._timeframes:

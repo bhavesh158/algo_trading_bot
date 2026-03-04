@@ -1,4 +1,8 @@
-"""Configuration management — loads YAML config with env-var overrides."""
+"""Configuration management — loads YAML config with env-var overrides.
+
+Environment variables are loaded from a `.env` file in the project root
+(if present) using python-dotenv, then overridden by actual env vars.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +11,17 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+try:
+    from dotenv import load_dotenv
+
+    # Load .env from project root (two levels up from config/settings.py)
+    _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+    _env_path = _PROJECT_ROOT / ".env"
+    if _env_path.exists():
+        load_dotenv(_env_path, override=False)  # real env vars take precedence
+except ImportError:
+    pass  # python-dotenv is optional; env vars still work normally
 
 _DEFAULT_CONFIG_PATH = Path(__file__).parent / "default_config.yaml"
 

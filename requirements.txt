@@ -1,6 +1,7 @@
 # Core
 pyyaml>=6.0
 python-dateutil>=2.8
+python-dotenv>=1.0
 
 # Market Data
 yfinance>=0.2.30
@@ -12,6 +13,10 @@ ta>=0.11  # Technical analysis library (RSI, MACD, Bollinger, ATR, etc.)
 
 # Scheduling
 schedule>=1.2
+
+# Broker APIs
+smartapi-python>=1.5  # Angel One SmartAPI
+pyotp>=2.9            # TOTP for Angel One 2FA
 
 # Testing
 pytest>=7.0

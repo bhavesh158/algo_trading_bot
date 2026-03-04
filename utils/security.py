@@ -51,8 +51,11 @@ def load_broker_credentials(prefix: str = "BROKER") -> BrokerCredentials:
     )
 
 
-def validate_live_trading_prerequisites() -> list[str]:
+def validate_live_trading_prerequisites(broker: str = "angelone") -> list[str]:
     """Check that all prerequisites for live trading are met.
+
+    Args:
+        broker: The broker adapter name ('angelone' or 'zerodha').
 
     Returns a list of missing prerequisites (empty = all good).
     """
@@ -60,7 +63,15 @@ def validate_live_trading_prerequisites() -> list[str]:
 
     if not os.environ.get("BROKER_API_KEY"):
         issues.append("BROKER_API_KEY environment variable not set")
-    if not os.environ.get("BROKER_API_SECRET"):
-        issues.append("BROKER_API_SECRET environment variable not set")
+
+    if broker == "angelone":
+        for var in ("BROKER_CLIENT_ID", "BROKER_PASSWORD", "BROKER_TOTP_SECRET"):
+            if not os.environ.get(var):
+                issues.append(f"{var} environment variable not set")
+    else:
+        # Zerodha / default
+        for var in ("BROKER_API_SECRET", "BROKER_ACCESS_TOKEN"):
+            if not os.environ.get(var):
+                issues.append(f"{var} environment variable not set")
 
     return issues

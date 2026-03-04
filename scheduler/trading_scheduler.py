@@ -40,6 +40,8 @@ class TradingScheduler:
         self._update_interval = config.get("market_data", {}).get("update_interval_seconds", 5)
         self._current_phase = TradingPhase.MARKET_CLOSED
         self._running = False
+        self._cycle_count = 0
+        self._heartbeat_interval = 12  # Log status every 12 cycles (~60s at 5s interval)
 
         logger.info("TradingScheduler initialized (open=%s, close=%s)",
                      self._market_open.strftime("%H:%M"), self._market_close.strftime("%H:%M"))
@@ -118,6 +120,12 @@ class TradingScheduler:
                 self._pre_market_done = True
 
         elif self._current_phase in (TradingPhase.MARKET_OPEN, TradingPhase.MARKET_HOURS):
+            # If we joined mid-session, run pre-market setup first
+            if not self._pre_market_done:
+                logger.info("Late start detected — running pre-market setup before trading")
+                self._run_pre_market(system)
+                self._pre_market_done = True
+                return  # Start trading on the next cycle
             self._run_market_hours(system)
 
         elif self._current_phase == TradingPhase.PRE_CLOSE:
@@ -133,9 +141,10 @@ class TradingScheduler:
         system.portfolio_manager.reset_daily_state()
         system.risk_manager.reset_daily_state()
 
-        # Load historical data for candidate pool
+        # Load daily data for stock selection scoring
         from selection.stock_selector import NIFTY50_SYMBOLS
-        system.market_data_engine.load_historical_data(NIFTY50_SYMBOLS)
+        logger.info("Loading daily data for %d candidates...", len(NIFTY50_SYMBOLS))
+        system.market_data_engine.load_daily_data(NIFTY50_SYMBOLS)
 
         # Build watchlist
         system.stock_selector.build_watchlist()
@@ -165,6 +174,8 @@ class TradingScheduler:
 
     def _run_market_hours(self, system: Any) -> None:
         """Market hours: update data, run strategies, execute trades."""
+        self._cycle_count += 1
+
         # Check if trading should be paused
         if not system.news_monitor.check_conditions():
             return
@@ -179,6 +190,16 @@ class TradingScheduler:
 
         # Update market data
         system.market_data_engine.update_data(watchlist)
+
+        # Periodic heartbeat
+        if self._cycle_count % self._heartbeat_interval == 0:
+            state = system.portfolio_manager.get_state()
+            regime = system.regime_detector.current_regime
+            logger.info(
+                "[heartbeat] cycle=%d | regime=%s | positions=%d | capital=%.0f | daily_pnl=%.2f | scanning %d symbols",
+                self._cycle_count, regime.name, state.open_position_count,
+                state.total_capital, state.daily_pnl, len(watchlist),
+            )
 
         # Update position prices
         for symbol, pos in system.portfolio_manager.get_open_positions().items():
