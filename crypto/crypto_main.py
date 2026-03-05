@@ -130,7 +130,7 @@ class CryptoTradingSystem:
                 self.order_executor.register_active_symbol(sym)
 
         # Start status API if enabled
-        api_conf = config.get("api", {})
+        api_conf = self.config.get("api", {})
         if api_conf.get("enabled", False):
             from crypto.api.status_server import start_status_server
             self._api_thread = start_status_server(
