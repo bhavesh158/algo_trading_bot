@@ -30,6 +30,8 @@ class TrendFollowingStrategy(BaseStrategy):
         self._adx_threshold = sc.get("adx_threshold", 25)
         self._atr_stop_mult = sc.get("atr_multiplier_stop", 2.0)
         self._atr_target_mult = sc.get("atr_multiplier_target", 3.0)
+        self._trend_cont_adx = sc.get("trend_continuation_adx", 40)
+        self._entered_symbols: set[str] = set()  # track to avoid duplicate entries
         self.primary_timeframe = "15m"
 
     def analyze(self, symbol: str) -> Optional[Signal]:
@@ -50,12 +52,28 @@ class TrendFollowingStrategy(BaseStrategy):
         if pd.isna(curr_adx) or pd.isna(curr_atr) or curr_atr == 0:
             return None
 
-        # Check for bullish crossover: fast crosses above slow
-        if (ema_fast.iloc[-1] > ema_slow.iloc[-1] and
-                ema_fast.iloc[-2] <= ema_slow.iloc[-2] and
-                curr_adx >= self._adx_threshold):
+        fast_now = ema_fast.iloc[-1]
+        fast_prev = ema_fast.iloc[-2]
+        slow_now = ema_slow.iloc[-1]
+        slow_prev = ema_slow.iloc[-2]
+        bullish_cross = fast_now > slow_now and fast_prev <= slow_prev
+        bearish_cross = fast_now < slow_now and fast_prev >= slow_prev
 
-            price = float(df["close"].iloc[-1])
+        # EMA separation as % of price
+        ema_sep_pct = abs(fast_now - slow_now) / slow_now * 100 if slow_now > 0 else 0
+
+        logger.debug(
+            "[trend_following] %s | EMA9=%.4f EMA21=%.4f (sep=%.2f%%) | ADX=%.1f (need>%d) | "
+            "bull_cross=%s bear_cross=%s",
+            symbol, fast_now, slow_now, ema_sep_pct, curr_adx, self._adx_threshold,
+            bullish_cross, bearish_cross,
+        )
+
+        price = float(df["close"].iloc[-1])
+
+        # Bullish crossover
+        if bullish_cross and curr_adx >= self._adx_threshold:
+            self._entered_symbols.add(symbol)
             stop = price - self._atr_stop_mult * curr_atr
             target = price + self._atr_target_mult * curr_atr
             confidence = min(0.5 + (curr_adx - self._adx_threshold) / 50, 0.9)
@@ -71,6 +89,62 @@ class TrendFollowingStrategy(BaseStrategy):
                 target_price=target,
                 metadata={"adx": curr_adx, "atr": curr_atr},
             )
+
+        # Bearish crossover
+        if bearish_cross and curr_adx >= self._adx_threshold:
+            self._entered_symbols.add(symbol)
+            stop = price + self._atr_stop_mult * curr_atr
+            target = price - self._atr_target_mult * curr_atr
+            confidence = min(0.5 + (curr_adx - self._adx_threshold) / 50, 0.9)
+
+            return Signal(
+                strategy_id=self.strategy_id,
+                symbol=symbol,
+                side=OrderSide.SELL,
+                strength=SignalStrength.STRONG if confidence > 0.7 else SignalStrength.MODERATE,
+                confidence=confidence,
+                entry_price=price,
+                stop_loss=stop,
+                target_price=target,
+                metadata={"adx": curr_adx, "atr": curr_atr},
+            )
+
+        # Trend continuation: strong existing trend, not yet entered
+        if symbol not in self._entered_symbols and curr_adx >= self._trend_cont_adx:
+            if fast_now > slow_now:  # bullish trend in progress
+                stop = price - self._atr_stop_mult * curr_atr
+                target = price + self._atr_target_mult * curr_atr
+                confidence = min(0.45 + (curr_adx - self._trend_cont_adx) / 80, 0.75)
+                self._entered_symbols.add(symbol)
+
+                return Signal(
+                    strategy_id=self.strategy_id,
+                    symbol=symbol,
+                    side=OrderSide.BUY,
+                    strength=SignalStrength.MODERATE,
+                    confidence=confidence,
+                    entry_price=price,
+                    stop_loss=stop,
+                    target_price=target,
+                    metadata={"adx": curr_adx, "atr": curr_atr, "type": "continuation"},
+                )
+            elif fast_now < slow_now:  # bearish trend in progress
+                stop = price + self._atr_stop_mult * curr_atr
+                target = price - self._atr_target_mult * curr_atr
+                confidence = min(0.45 + (curr_adx - self._trend_cont_adx) / 80, 0.75)
+                self._entered_symbols.add(symbol)
+
+                return Signal(
+                    strategy_id=self.strategy_id,
+                    symbol=symbol,
+                    side=OrderSide.SELL,
+                    strength=SignalStrength.MODERATE,
+                    confidence=confidence,
+                    entry_price=price,
+                    stop_loss=stop,
+                    target_price=target,
+                    metadata={"adx": curr_adx, "atr": curr_atr, "type": "continuation"},
+                )
 
         return None
 

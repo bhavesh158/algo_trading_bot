@@ -33,13 +33,26 @@ class PairSelector:
         self._min_depth = liq.get("min_orderbook_depth_usdt", 50_000)
 
         self.active_pairs: list[str] = []
+        self._protected_pairs: set[str] = set()  # pairs with open positions — never filtered out
         logger.info("PairSelector initialized (%d candidates)", len(self._candidates))
+
+    def set_protected_pairs(self, symbols: set[str]) -> None:
+        """Set pairs that must always be in the watchlist (have open positions)."""
+        self._protected_pairs = set(symbols)
+        if symbols:
+            logger.info("Protected pairs (open positions): %s", ", ".join(symbols))
 
     def build_watchlist(self) -> list[str]:
         """Evaluate all candidates and return the top eligible pairs."""
         scored: list[tuple[str, float]] = []
 
         for pair in self._candidates:
+            # Skip filtering for protected pairs — always include them
+            if pair in self._protected_pairs:
+                scored.append((pair, float("inf")))
+                logger.info("%s included (protected — open position)", pair)
+                continue
+
             ticker = self.provider.fetch_ticker(pair)
             if not ticker or ticker.get("last", 0) <= 0:
                 continue
@@ -66,6 +79,11 @@ class PairSelector:
 
         scored.sort(key=lambda x: x[1], reverse=True)
         self.active_pairs = [p for p, _ in scored[:self._max_pairs]]
+
+        # Ensure protected pairs are always present even if max_pairs limit was hit
+        for pp in self._protected_pairs:
+            if pp not in self.active_pairs:
+                self.active_pairs.append(pp)
 
         logger.info(
             "Watchlist built: %d/%d pairs passed filters — %s",

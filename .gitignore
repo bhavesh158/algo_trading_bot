@@ -27,7 +27,7 @@ crypto_reports/
 
 # Secrets
 .env
-*.env
+!.env.example
 
 # OS
 .DS_Store

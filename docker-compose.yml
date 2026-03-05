@@ -1,0 +1,30 @@
+services:
+  crypto-trader:
+    build: .
+    container_name: crypto-trader
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+    # Pass env vars for exchange credentials and config overrides
+    env_file:
+      - .env
+
+    # Status API port (only used when CRYPTO_TRADING__api__enabled=true)
+    ports:
+      - "${CRYPTO_API_PORT:-8599}:${CRYPTO_API_PORT:-8599}"
+
+    # Persist state, trade journal, logs across restarts
+    volumes:
+      - crypto_data:/app/crypto_data
+
+    # Override default CMD if needed
+    # command: ["--mode", "live", "--exchange", "binance"]
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+volumes:
+  crypto_data:

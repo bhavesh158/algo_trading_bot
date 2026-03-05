@@ -14,6 +14,7 @@ from crypto.core.enums import OrderSide, PositionStatus
 from crypto.core.event_bus import EventBus
 from crypto.core.events import PortfolioUpdateEvent
 from crypto.core.models import Order, Position, PortfolioState, Trade
+from crypto.portfolio.state_manager import StateManager
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,7 @@ class PortfolioManager:
     def __init__(self, config: dict[str, Any], event_bus: EventBus) -> None:
         self.config = config
         self.event_bus = event_bus
+        self.state_manager = StateManager(config)
 
         initial = config.get("account", {}).get("initial_capital", 1000.0)
         self._total_capital = initial
@@ -36,14 +38,42 @@ class PortfolioManager:
         # Track recent P&L entries for rolling window
         self._pnl_entries: deque = deque(maxlen=10000)
 
-        logger.info("PortfolioManager initialized (capital=%.2f)", initial)
+        # Attempt to restore from saved state
+        self._restore_from_disk(initial)
+
+        logger.info("PortfolioManager initialized (capital=%.2f)", self._total_capital)
+
+    def _restore_from_disk(self, default_capital: float) -> None:
+        """Restore portfolio state from disk if available."""
+        saved = self.state_manager.load_state()
+        if not saved:
+            return
+
+        positions = saved.get("positions", {})
+        if not positions:
+            return
+
+        capital = saved.get("capital", {})
+        self._total_capital = capital.get("total", default_capital)
+        self._available_capital = capital.get("available", default_capital)
+        self._peak_capital = capital.get("peak", default_capital)
+        self._rolling_pnl = capital.get("rolling_pnl", 0.0)
+
+        self._positions = self.state_manager.restore_positions(saved)
+        logger.info(
+            "Restored %d open positions from saved state (capital=%.2f)",
+            len(self._positions), self._total_capital,
+        )
 
     def get_state(self) -> PortfolioState:
         """Get current portfolio snapshot."""
         open_positions = [p for p in self._positions.values() if p.status == PositionStatus.OPEN]
         total_exposure = sum(p.notional_value for p in open_positions)
 
-        current_capital = self._available_capital + sum(p.unrealized_pnl for p in open_positions)
+        # Total equity = cash + current value of all open positions
+        current_capital = self._available_capital + sum(
+            p.current_price * p.quantity for p in open_positions
+        )
         self._peak_capital = max(self._peak_capital, current_capital)
         current_dd = 0.0
         if self._peak_capital > 0:
@@ -69,6 +99,7 @@ class PortfolioManager:
             entry_price=order.filled_price,
             current_price=order.filled_price,
             stop_loss=order.stop_price,
+            target_price=order.target_price,
             strategy_id=order.strategy_id,
             entry_order_id=order.id,
         )
@@ -82,6 +113,7 @@ class PortfolioManager:
             order.side.name, order.symbol, order.filled_quantity, order.filled_price,
         )
         self._publish_update()
+        self._save_state()
         return position
 
     def close_position(self, symbol: str, exit_price: float, commission: float = 0.0) -> Optional[Trade]:
@@ -121,6 +153,7 @@ class PortfolioManager:
             symbol, trade.side.name, trade.pnl, trade.pnl_pct,
         )
         self._publish_update()
+        self._save_state()
         return trade
 
     def update_position_price(self, symbol: str, price: float) -> None:
@@ -144,6 +177,21 @@ class PortfolioManager:
         self._rolling_pnl = 0.0
         self._pnl_entries.clear()
         logger.info("Rolling P&L reset")
+
+    def _save_state(self, entered_symbols: set[str] | None = None) -> None:
+        """Persist current state to disk."""
+        self.state_manager.save_state(
+            positions=self._positions,
+            total_capital=self._total_capital,
+            available_capital=self._available_capital,
+            peak_capital=self._peak_capital,
+            rolling_pnl=self._rolling_pnl,
+            entered_symbols=entered_symbols,
+        )
+
+    def get_open_position_symbols(self) -> set[str]:
+        """Return symbols with open positions (used by pair selector)."""
+        return {s for s, p in self._positions.items() if p.status == PositionStatus.OPEN}
 
     def _publish_update(self) -> None:
         state = self.get_state()

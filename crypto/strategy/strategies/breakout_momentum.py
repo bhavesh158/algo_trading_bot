@@ -57,6 +57,12 @@ class BreakoutMomentumStrategy(BaseStrategy):
         current_close = close.iloc[-1]
         current_vol = volume.iloc[-1]
 
+        logger.debug(
+            "[breakout] %s | close=%.4f | range_high=%.4f (break=%.4f) | vol=%.0f avg=%.0f (need %.1fx)",
+            symbol, current_close, range_high, breakout_level,
+            current_vol, curr_vol_sma, self._vol_mult,
+        )
+
         # Breakout: close above range high + buffer, volume confirms
         if current_close > breakout_level and current_vol > self._vol_mult * curr_vol_sma:
             stop = current_close - self._atr_stop_mult * curr_atr

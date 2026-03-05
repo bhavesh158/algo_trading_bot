@@ -67,6 +67,7 @@ class CryptoTradingSystem:
         from crypto.scheduler.continuous_scheduler import ContinuousScheduler
         from crypto.reporting.report_generator import ReportGenerator
         from crypto.reporting.alert_manager import AlertManager
+        from crypto.reporting.trade_journal import TradeJournal
 
         # Connect to exchange data provider
         exchange_name = get_nested(self.config, "exchange", "name") or "binance"
@@ -102,6 +103,7 @@ class CryptoTradingSystem:
         )
         self.performance_monitor = PerformanceMonitor(self.config, self.event_bus)
         self.report_generator = ReportGenerator(self.config, self.event_bus)
+        self.trade_journal = TradeJournal(self.config)
         self.scheduler = ContinuousScheduler(self.config, self.event_bus)
 
         # Wire exchange adapter for live mode
@@ -114,6 +116,28 @@ class CryptoTradingSystem:
                 raise RuntimeError("Failed to connect exchange adapter for live trading")
 
         self.scheduler.set_trading_system(self)
+
+        # Crash recovery: check for restored positions and ensure pairs are tracked
+        restored_symbols = self.portfolio_manager.get_open_position_symbols()
+        if restored_symbols:
+            logger.info(
+                "Crash recovery: %d positions restored from state — %s",
+                len(restored_symbols), ", ".join(restored_symbols),
+            )
+            self.pair_selector.set_protected_pairs(restored_symbols)
+            # Register restored symbols with order executor to prevent duplicate orders
+            for sym in restored_symbols:
+                self.order_executor.register_active_symbol(sym)
+
+        # Start status API if enabled
+        api_conf = config.get("api", {})
+        if api_conf.get("enabled", False):
+            from crypto.api.status_server import start_status_server
+            self._api_thread = start_status_server(
+                system=self,
+                host=api_conf.get("host", "0.0.0.0"),
+                port=int(api_conf.get("port", 8599)),
+            )
 
         logger.info("All components initialized")
         logger.info("Event bus: %d subscriptions active", self.event_bus.subscriber_count)
@@ -130,14 +154,75 @@ class CryptoTradingSystem:
             self.shutdown()
 
     def shutdown(self) -> None:
-        """Graceful shutdown."""
+        """Graceful shutdown — close all open positions, save state, generate report."""
         if not self._running:
             return
         self._running = False
-        logger.info("Shutting down crypto trading system...")
-        self.report_generator.generate_report()
+        logger.info("="*60)
+        logger.info("  GRACEFUL SHUTDOWN INITIATED")
+        logger.info("="*60)
+
+        # Close all open positions at market price
+        try:
+            self._close_all_positions()
+        except Exception:
+            logger.exception("Error closing positions during shutdown")
+
+        # Final report
+        try:
+            self.report_generator.generate_report()
+        except Exception:
+            logger.exception("Error generating final report")
+
         self.event_bus.clear()
         logger.info("Crypto trading system stopped.")
+
+    def _close_all_positions(self) -> None:
+        """Close every open position at current market price during shutdown."""
+        open_positions = self.portfolio_manager.get_open_positions()
+        if not open_positions:
+            logger.info("No open positions to close.")
+            return
+
+        # Safety save — snapshot current state BEFORE attempting closes
+        # so if shutdown hangs/crashes, positions are still on disk
+        self.portfolio_manager._save_state()
+
+        logger.info("Closing %d open position(s)...", len(open_positions))
+        for symbol, pos in list(open_positions.items()):
+            try:
+                current_price = self.market_data_engine.get_current_price(symbol)
+                if current_price <= 0:
+                    # Try fetching fresh price from provider
+                    ticker = self.provider.fetch_ticker(symbol)
+                    current_price = ticker.get("last", 0) if ticker else 0
+
+                if current_price <= 0:
+                    logger.error("Cannot get price for %s — position kept in state file for recovery", symbol)
+                    continue
+
+                commission = self.order_executor.get_commission(current_price * pos.quantity)
+                trade = self.portfolio_manager.close_position(symbol, current_price, commission)
+                if trade:
+                    self.trade_journal.log_close(trade)
+                    self.order_executor.release_symbol(symbol)
+                    logger.info(
+                        "  Closed %s: pnl=%.4f (%.2f%%)",
+                        symbol, trade.pnl, trade.pnl_pct,
+                    )
+            except Exception:
+                logger.exception("Failed to close position for %s", symbol)
+
+        # Only clear state if ALL positions were closed successfully
+        remaining = self.portfolio_manager.get_open_positions()
+        if remaining:
+            logger.warning(
+                "%d position(s) could NOT be closed — preserved in state.json for crash recovery: %s",
+                len(remaining), ", ".join(remaining.keys()),
+            )
+        else:
+            self.portfolio_manager.state_manager.clear_state()
+            logger.info("All positions closed and state cleared.")
 
 
 def parse_args() -> argparse.Namespace:
@@ -185,6 +270,7 @@ def main() -> None:
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, _signal_handler)
+    signal.signal(signal.SIGHUP, _signal_handler)  # terminal/SSH disconnect
 
     system.initialize()
     system.run()

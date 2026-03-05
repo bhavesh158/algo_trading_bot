@@ -162,6 +162,12 @@ reporting:
   report_dir: ./crypto_reports
   format: json
 
+# --- Status API ---
+api:
+  enabled: false         # Set to true to enable the monitoring API
+  host: "0.0.0.0"
+  port: 8599
+
 # --- Alerts ---
 alerts:
   enabled: true

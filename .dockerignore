@@ -1,0 +1,16 @@
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.git/
+.idea/
+.vscode/
+*.log
+.env
+crypto_data/
+crypto_reports/
+data_store/
+reports/
+stocks/
+*.egg-info/
+.DS_Store

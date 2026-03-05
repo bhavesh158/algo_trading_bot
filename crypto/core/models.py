@@ -85,6 +85,7 @@ class Order:
     quantity: float = 0.0  # Float for fractional crypto
     price: float = 0.0
     stop_price: float = 0.0
+    target_price: float = 0.0
     status: OrderStatus = OrderStatus.PENDING
     strategy_id: str = ""
     signal_id: str = ""

@@ -75,6 +75,10 @@ class OrderExecutor:
             self._active_order_symbols.discard(order.symbol)
         return success
 
+    def register_active_symbol(self, symbol: str) -> None:
+        """Register a symbol as having an active position (used after crash recovery)."""
+        self._active_order_symbols.add(symbol)
+
     def release_symbol(self, symbol: str) -> None:
         self._active_order_symbols.discard(symbol)
 

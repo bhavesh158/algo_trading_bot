@@ -11,7 +11,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from crypto.core.enums import OrderType
+from crypto.core.enums import OrderSide, OrderType
 from crypto.core.event_bus import EventBus
 from crypto.core.models import Order
 
@@ -182,6 +182,10 @@ class ContinuousScheduler:
 
         # Execute signals
         for signal in signals:
+            # Re-check position limit before each order (signals batch from same cycle)
+            if not system.risk_manager.can_take_trade(signal):
+                continue
+
             quantity = system.position_sizer.calculate_quantity(signal)
             if quantity <= 0:
                 continue
@@ -193,6 +197,7 @@ class ContinuousScheduler:
                 quantity=quantity,
                 price=signal.entry_price,
                 stop_price=signal.stop_loss,
+                target_price=signal.target_price,
                 strategy_id=signal.strategy_id,
                 signal_id=signal.id,
             )
@@ -201,30 +206,38 @@ class ContinuousScheduler:
             filled_order = system.order_executor.execute_order(order, current_price)
 
             if filled_order.status.name == "FILLED":
-                system.portfolio_manager.open_position(filled_order)
+                pos = system.portfolio_manager.open_position(filled_order)
+                system.trade_journal.log_open(filled_order, pos)
 
         # Check exits for open positions
         open_positions = system.portfolio_manager.get_open_positions()
         for symbol, pos in open_positions.items():
             current_price = system.market_data_engine.get_current_price(symbol)
+            is_long = pos.side == OrderSide.BUY
 
-            # Stop loss check
-            if pos.stop_loss > 0 and current_price <= pos.stop_loss:
-                commission = system.order_executor.get_commission(current_price * pos.quantity)
-                trade = system.portfolio_manager.close_position(symbol, current_price, commission)
-                if trade:
-                    system.performance_monitor.record_trade(trade)
-                    system.order_executor.release_symbol(symbol)
-                continue
+            # Stop loss check (long: price falls to stop; short: price rises to stop)
+            if pos.stop_loss > 0:
+                stop_hit = current_price <= pos.stop_loss if is_long else current_price >= pos.stop_loss
+                if stop_hit:
+                    commission = system.order_executor.get_commission(current_price * pos.quantity)
+                    trade = system.portfolio_manager.close_position(symbol, current_price, commission)
+                    if trade:
+                        system.trade_journal.log_close(trade)
+                        system.performance_monitor.record_trade(trade)
+                        system.order_executor.release_symbol(symbol)
+                    continue
 
-            # Target check
-            if pos.target_price > 0 and current_price >= pos.target_price:
-                commission = system.order_executor.get_commission(current_price * pos.quantity)
-                trade = system.portfolio_manager.close_position(symbol, current_price, commission)
-                if trade:
-                    system.performance_monitor.record_trade(trade)
-                    system.order_executor.release_symbol(symbol)
-                continue
+            # Target check (long: price rises to target; short: price falls to target)
+            if pos.target_price > 0:
+                target_hit = current_price >= pos.target_price if is_long else current_price <= pos.target_price
+                if target_hit:
+                    commission = system.order_executor.get_commission(current_price * pos.quantity)
+                    trade = system.portfolio_manager.close_position(symbol, current_price, commission)
+                    if trade:
+                        system.trade_journal.log_close(trade)
+                        system.performance_monitor.record_trade(trade)
+                        system.order_executor.release_symbol(symbol)
+                    continue
 
             # Strategy exit
             exit_signals = system.strategy_engine.check_exits(
@@ -239,8 +252,14 @@ class ContinuousScheduler:
                 commission = system.order_executor.get_commission(current_price * pos.quantity)
                 trade = system.portfolio_manager.close_position(symbol, current_price, commission)
                 if trade:
+                    system.trade_journal.log_close(trade)
                     system.performance_monitor.record_trade(trade)
                     system.order_executor.release_symbol(symbol)
+
+        # Keep pair selector in sync with open positions
+        system.pair_selector.set_protected_pairs(
+            system.portfolio_manager.get_open_position_symbols()
+        )
 
         # Evaluate strategy performance periodically
         if self._cycle_count % (self._heartbeat_cycles * 10) == 0:
@@ -254,10 +273,13 @@ class ContinuousScheduler:
         state = self._system.portfolio_manager.get_state()
         regime = self._system.regime_detector.current_regime
         pairs = self._system.pair_selector.active_pairs
+        unrealized = state.total_unrealized_pnl
         logger.info(
-            "[heartbeat] cycle=%d | regime=%s | positions=%d | capital=%.2f | pnl=%.4f | pairs=%d",
+            "[heartbeat] cycle=%d | regime=%s | positions=%d | capital=%.2f | "
+            "realized=%.4f | unrealized=%.4f | equity=%.2f | pairs=%d",
             self._cycle_count, regime.name, state.open_position_count,
-            state.total_capital, state.rolling_pnl, len(pairs),
+            state.total_capital, state.rolling_pnl, unrealized,
+            state.total_capital + unrealized, len(pairs),
         )
 
     def stop(self) -> None:
