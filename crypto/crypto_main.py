@@ -228,8 +228,8 @@ class CryptoTradingSystem:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Crypto Automated Trading System")
     parser.add_argument(
-        "--mode", choices=["paper", "live"], default="paper",
-        help="Trading mode (default: paper)",
+        "--mode", choices=["paper", "live"], default=None,
+        help="Trading mode (default: paper). Can also be set via CRYPTO_TRADING__system__mode env var.",
     )
     parser.add_argument(
         "--exchange", type=str, default=None,
@@ -252,6 +252,10 @@ def main() -> None:
 
     if args.mode:
         config["system"]["mode"] = args.mode
+    elif os.environ.get("CRYPTO_TRADING_MODE"):
+        config["system"]["mode"] = os.environ["CRYPTO_TRADING_MODE"].lower()
+    # Ensure mode has a value (CLI > CRYPTO_TRADING_MODE env > CRYPTO_TRADING__system__mode env > yaml default)
+    config["system"].setdefault("mode", "paper")
     if args.exchange:
         config.setdefault("exchange", {})["name"] = args.exchange
     if args.log_level:

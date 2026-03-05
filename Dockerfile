@@ -21,4 +21,3 @@ VOLUME ["/app/crypto_data"]
 STOPSIGNAL SIGTERM
 
 ENTRYPOINT ["python", "-m", "crypto.crypto_main"]
-CMD ["--mode", "paper"]

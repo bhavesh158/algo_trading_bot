@@ -17,9 +17,6 @@ services:
     volumes:
       - crypto_data:/app/crypto_data
 
-    # Override default CMD if needed
-    # command: ["--mode", "live", "--exchange", "binance"]
-
     logging:
       driver: json-file
       options:

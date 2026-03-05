@@ -56,6 +56,20 @@ docker compose build
 docker compose up -d
 ```
 
+**Switching between paper and live mode:**
+
+Set `CRYPTO_TRADING_MODE` in your `.env` file:
+
+```bash
+# Paper trading (default — no real money)
+CRYPTO_TRADING_MODE=paper
+
+# Live trading (real orders via exchange API)
+CRYPTO_TRADING_MODE=live
+```
+
+Then restart: `docker compose restart`
+
 **Managing the container:**
 
 ```bash
@@ -124,7 +138,7 @@ Type=simple
 User=bhavesh
 WorkingDirectory=/home/bhavesh/algo_trading_bot
 EnvironmentFile=/home/bhavesh/algo_trading_bot/.env
-ExecStart=/home/bhavesh/algo_trading_bot/venv/bin/python -m crypto.crypto_main --mode paper
+ExecStart=/home/bhavesh/algo_trading_bot/venv/bin/python -m crypto.crypto_main
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=30
@@ -137,6 +151,13 @@ SyslogIdentifier=crypto-trader
 
 [Install]
 WantedBy=multi-user.target
+```
+
+The trading mode is controlled by `CRYPTO_TRADING_MODE` in your `.env` file (loaded via `EnvironmentFile`). Change it and restart:
+
+```bash
+# Edit .env: set CRYPTO_TRADING_MODE=paper or CRYPTO_TRADING_MODE=live
+sudo systemctl restart crypto-trader
 ```
 
 **3. Enable and start:**
