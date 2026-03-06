@@ -15,6 +15,7 @@ from crypto.core.event_bus import EventBus
 from crypto.core.events import PortfolioUpdateEvent
 from crypto.core.models import Order, Position, PortfolioState, Trade
 from crypto.portfolio.state_manager import StateManager
+from crypto.reporting.capital_ledger import CapitalLedger
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ class PortfolioManager:
         self.config = config
         self.event_bus = event_bus
         self.state_manager = StateManager(config)
+        self.ledger = CapitalLedger(config)
 
         initial = config.get("account", {}).get("initial_capital", 1000.0)
         self._total_capital = initial
@@ -39,19 +41,21 @@ class PortfolioManager:
         self._pnl_entries: deque = deque(maxlen=10000)
 
         # Attempt to restore from saved state
-        self._restore_from_disk(initial)
+        restored = self._restore_from_disk(initial)
+        if not restored:
+            self.ledger.log_initial(initial)
 
         logger.info("PortfolioManager initialized (capital=%.2f)", self._total_capital)
 
-    def _restore_from_disk(self, default_capital: float) -> None:
-        """Restore portfolio state from disk if available."""
+    def _restore_from_disk(self, default_capital: float) -> bool:
+        """Restore portfolio state from disk if available. Returns True if restored."""
         saved = self.state_manager.load_state()
         if not saved:
-            return
+            return False
 
         positions = saved.get("positions", {})
         if not positions:
-            return
+            return False
 
         capital = saved.get("capital", {})
         self._total_capital = capital.get("total", default_capital)
@@ -60,10 +64,14 @@ class PortfolioManager:
         self._rolling_pnl = capital.get("rolling_pnl", 0.0)
 
         self._positions = self.state_manager.restore_positions(saved)
+        self.ledger.log_restore(
+            len(self._positions), self._available_capital, self._total_capital,
+        )
         logger.info(
             "Restored %d open positions from saved state (capital=%.2f)",
             len(self._positions), self._total_capital,
         )
+        return True
 
     def get_state(self) -> PortfolioState:
         """Get current portfolio snapshot."""
@@ -108,6 +116,14 @@ class PortfolioManager:
         self._available_capital -= notional
         self._positions[order.symbol] = position
 
+        self.ledger.log_open(
+            symbol=order.symbol,
+            side=order.side.name,
+            notional=notional,
+            available_after=self._available_capital,
+            total_capital=self._total_capital,
+        )
+
         logger.info(
             "Position opened: %s %s qty=%.6f @ %.4f",
             order.side.name, order.symbol, order.filled_quantity, order.filled_price,
@@ -147,6 +163,16 @@ class PortfolioManager:
 
         self._closed_trades.append(trade)
         del self._positions[symbol]
+
+        self.ledger.log_close(
+            symbol=symbol,
+            side=trade.side.name,
+            notional_returned=notional,
+            pnl=trade.pnl,
+            commission=commission,
+            available_after=self._available_capital,
+            total_capital=self._total_capital,
+        )
 
         logger.info(
             "Position closed: %s %s pnl=%.4f (%.2f%%)",

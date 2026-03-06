@@ -39,6 +39,7 @@ class _Handler(BaseHTTPRequestHandler):
             "/health": self._health,
             "/status": self._status,
             "/trades": self._trades,
+            "/ledger": self._ledger,
         }
 
         handler = routes.get(self.path.split("?")[0])
@@ -52,7 +53,7 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self._json_response(404, {
                 "error": "not found",
-                "endpoints": ["/health", "/status", "/trades"],
+                "endpoints": ["/health", "/status", "/trades", "/ledger"],
             })
 
     def _health(self) -> dict:
@@ -148,6 +149,31 @@ class _Handler(BaseHTTPRequestHandler):
             "trades": trades,
             "count": len(trades),
             "total_in_journal": len(rows),
+        }
+
+    def _ledger(self) -> dict:
+        system = _trading_system
+        if not system:
+            return {"error": "system not initialized"}
+
+        data_dir = system.config.get("system", {}).get("data_dir", "./crypto_data")
+        ledger_path = Path(data_dir) / "capital_ledger.csv"
+
+        if not ledger_path.exists():
+            return {"entries": [], "count": 0}
+
+        entries = []
+        with open(ledger_path, newline="") as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+
+        for row in rows[-100:]:
+            entries.append({k: v for k, v in row.items() if v != ""})
+
+        return {
+            "entries": entries,
+            "count": len(entries),
+            "total_in_ledger": len(rows),
         }
 
     def _json_response(self, status: int, data: dict) -> None:
