@@ -154,7 +154,11 @@ class CryptoTradingSystem:
             self.shutdown()
 
     def shutdown(self) -> None:
-        """Graceful shutdown — close all open positions, save state, generate report."""
+        """Graceful shutdown — save state and exit.
+
+        Paper mode: preserve open positions for restart (no forced closes).
+        Live mode:  close all positions at market, then save state.
+        """
         if not self._running:
             return
         self._running = False
@@ -162,11 +166,20 @@ class CryptoTradingSystem:
         logger.info("  GRACEFUL SHUTDOWN INITIATED")
         logger.info("="*60)
 
-        # Close all open positions at market price
-        try:
-            self._close_all_positions()
-        except Exception:
-            logger.exception("Error closing positions during shutdown")
+        if self.mode == TradingMode.LIVE:
+            # Live mode: must flatten before shutdown — real money at stake
+            try:
+                self._close_all_positions()
+            except Exception:
+                logger.exception("Error closing positions during shutdown")
+        else:
+            # Paper mode: just save state, positions resume on restart
+            open_count = len(self.portfolio_manager.get_open_positions())
+            self.portfolio_manager._save_state()
+            logger.info(
+                "Paper mode: saved state with %d open position(s) for restart",
+                open_count,
+            )
 
         # Final report
         try:

@@ -7,9 +7,10 @@ and aggregates/filters trading signals.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, Optional
 
-from crypto.core.enums import OrderSide
+from crypto.core.enums import MarketRegime, OrderSide
 from crypto.core.event_bus import EventBus
 from crypto.core.events import SignalEvent
 from crypto.core.models import Signal
@@ -17,6 +18,11 @@ from crypto.data.market_data_engine import MarketDataEngine
 from crypto.strategy.base_strategy import BaseStrategy
 
 logger = logging.getLogger(__name__)
+
+# Regimes where mean reversion BUY is dangerous (fighting the trend)
+_REGIME_BLOCK_MR_BUY = {MarketRegime.TRENDING_DOWN, MarketRegime.HIGH_VOLATILITY}
+# Regimes where mean reversion SELL is dangerous
+_REGIME_BLOCK_MR_SELL = {MarketRegime.TRENDING_UP, MarketRegime.HIGH_VOLATILITY}
 
 
 class StrategyEngine:
@@ -42,6 +48,10 @@ class StrategyEngine:
         self._confidence_threshold = config.get("strategies", {}).get(
             "default_confidence_threshold", 0.6
         )
+        # Signal spam suppression: track last signal time per (symbol, side, strategy)
+        self._last_signal_log: dict[tuple[str, str, str], datetime] = {}
+        self._signal_log_interval = 300  # seconds between repeated signal logs
+
         logger.info("StrategyEngine initialized (threshold=%.2f)", self._confidence_threshold)
 
     def load_strategies(self, market_data: MarketDataEngine) -> None:
@@ -101,17 +111,32 @@ class StrategyEngine:
                     if signal.confidence < self._confidence_threshold:
                         continue
 
+                    # Regime filter: block counter-trend mean reversion signals
+                    regime = self.regime_detector.current_regime if self.regime_detector else MarketRegime.UNKNOWN
+                    if name == "mean_reversion":
+                        if signal.side == OrderSide.BUY and regime in _REGIME_BLOCK_MR_BUY:
+                            continue
+                        if signal.side == OrderSide.SELL and regime in _REGIME_BLOCK_MR_SELL:
+                            continue
+
                     # Risk check
                     if not self.risk_manager.can_take_trade(signal):
                         continue
 
                     signals.append(signal)
                     self.event_bus.publish(SignalEvent(signal=signal))
-                    logger.info(
-                        "SIGNAL: %s %s %s conf=%.2f (by %s)",
-                        signal.side.name, symbol, signal.strength.name,
-                        signal.confidence, name,
-                    )
+
+                    # Suppress repeated signal logs for the same symbol/side/strategy
+                    sig_key = (symbol, signal.side.name, name)
+                    now = datetime.now(timezone.utc)
+                    last_logged = self._last_signal_log.get(sig_key)
+                    if not last_logged or (now - last_logged).total_seconds() >= self._signal_log_interval:
+                        logger.info(
+                            "SIGNAL: %s %s %s conf=%.2f (by %s) [regime=%s]",
+                            signal.side.name, symbol, signal.strength.name,
+                            signal.confidence, name, regime.name,
+                        )
+                        self._last_signal_log[sig_key] = now
 
                 except Exception:
                     logger.exception("Error in strategy %s for %s", name, symbol)
