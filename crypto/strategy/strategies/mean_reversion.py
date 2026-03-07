@@ -106,7 +106,10 @@ class MeanReversionStrategy(BaseStrategy):
 
         return None
 
-    def should_exit(self, symbol: str, entry_price: float, current_price: float) -> bool:
+    def should_exit(
+        self, symbol: str, entry_price: float, current_price: float,
+        side: OrderSide = OrderSide.BUY,
+    ) -> bool:
         df = self.market_data.get_dataframe(symbol, self.primary_timeframe)
         if df.empty:
             return False
@@ -117,5 +120,12 @@ class MeanReversionStrategy(BaseStrategy):
         if bb_mid.empty or rsi.empty:
             return False
 
-        # Exit when price returns to BB mid or RSI goes overbought
-        return bool(current_price >= bb_mid.iloc[-1] or rsi.iloc[-1] > self._rsi_overbought)
+        mid = bb_mid.iloc[-1]
+        curr_rsi = rsi.iloc[-1]
+
+        if side == OrderSide.BUY:
+            # Long: exit when price returns up to BB mid or RSI overbought
+            return bool(current_price >= mid or curr_rsi > self._rsi_overbought)
+        else:
+            # Short: exit when price returns down to BB mid or RSI oversold
+            return bool(current_price <= mid or curr_rsi < self._rsi_oversold)

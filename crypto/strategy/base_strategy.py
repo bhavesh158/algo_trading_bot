@@ -29,12 +29,18 @@ class BaseStrategy(ABC):
         ...
 
     @abstractmethod
-    def should_exit(self, symbol: str, entry_price: float, current_price: float) -> bool:
+    def should_exit(
+        self, symbol: str, entry_price: float, current_price: float,
+        side: OrderSide = OrderSide.BUY,
+    ) -> bool:
         """Determine whether an open position should be exited."""
         ...
 
-    def get_exit_signal(self, symbol: str, entry_price: float, current_price: float) -> Optional[Signal]:
-        if self.should_exit(symbol, entry_price, current_price):
+    def get_exit_signal(
+        self, symbol: str, entry_price: float, current_price: float,
+        side: OrderSide = OrderSide.BUY,
+    ) -> Optional[Signal]:
+        if self.should_exit(symbol, entry_price, current_price, side=side):
             return Signal(
                 strategy_id=self.strategy_id,
                 symbol=symbol,

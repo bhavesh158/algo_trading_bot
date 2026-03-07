@@ -85,7 +85,10 @@ class BreakoutMomentumStrategy(BaseStrategy):
 
         return None
 
-    def should_exit(self, symbol: str, entry_price: float, current_price: float) -> bool:
+    def should_exit(
+        self, symbol: str, entry_price: float, current_price: float,
+        side: OrderSide = OrderSide.BUY,
+    ) -> bool:
         df = self.market_data.get_dataframe(symbol, self.primary_timeframe)
         if df.empty:
             return False
@@ -94,7 +97,12 @@ class BreakoutMomentumStrategy(BaseStrategy):
         if atr.empty or pd.isna(atr.iloc[-1]):
             return False
 
-        # Trailing stop: exit if price drops more than 2x ATR from highest since entry
-        recent_high = df["high"].iloc[-self._lookback:].max()
-        trailing_stop = recent_high - self._atr_stop_mult * atr.iloc[-1]
-        return bool(current_price < trailing_stop)
+        # Trailing stop: exit if price moves against position by 2x ATR
+        if side == OrderSide.BUY:
+            recent_high = df["high"].iloc[-self._lookback:].max()
+            trailing_stop = recent_high - self._atr_stop_mult * atr.iloc[-1]
+            return bool(current_price < trailing_stop)
+        else:
+            recent_low = df["low"].iloc[-self._lookback:].min()
+            trailing_stop = recent_low + self._atr_stop_mult * atr.iloc[-1]
+            return bool(current_price > trailing_stop)

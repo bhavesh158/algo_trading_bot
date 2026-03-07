@@ -301,6 +301,7 @@ class ContinuousScheduler:
                     "strategy_id": pos.strategy_id,
                     "entry_price": pos.entry_price,
                     "current_price": current_price,
+                    "side": pos.side,
                 }},
             )
             for _ in exit_signals:

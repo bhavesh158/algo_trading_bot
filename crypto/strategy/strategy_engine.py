@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
+from crypto.core.enums import OrderSide
 from crypto.core.event_bus import EventBus
 from crypto.core.events import SignalEvent
 from crypto.core.models import Signal
@@ -134,6 +135,7 @@ class StrategyEngine:
             try:
                 exit_sig = strategy.get_exit_signal(
                     symbol, info["entry_price"], info["current_price"],
+                    side=info.get("side", OrderSide.BUY),
                 )
                 if exit_sig:
                     exit_signals.append(exit_sig)

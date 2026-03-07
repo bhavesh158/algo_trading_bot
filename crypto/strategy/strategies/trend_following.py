@@ -148,7 +148,10 @@ class TrendFollowingStrategy(BaseStrategy):
 
         return None
 
-    def should_exit(self, symbol: str, entry_price: float, current_price: float) -> bool:
+    def should_exit(
+        self, symbol: str, entry_price: float, current_price: float,
+        side: OrderSide = OrderSide.BUY,
+    ) -> bool:
         df = self.market_data.get_dataframe(symbol, self.primary_timeframe)
         if df.empty or len(df) < self._slow_ema + 2:
             return False
@@ -158,5 +161,14 @@ class TrendFollowingStrategy(BaseStrategy):
         if ema_fast.empty or ema_slow.empty:
             return False
 
-        # Exit on bearish crossover
-        return bool(ema_fast.iloc[-1] < ema_slow.iloc[-1] and ema_fast.iloc[-2] >= ema_slow.iloc[-2])
+        fast_now = ema_fast.iloc[-1]
+        fast_prev = ema_fast.iloc[-2]
+        slow_now = ema_slow.iloc[-1]
+        slow_prev = ema_slow.iloc[-2]
+
+        if side == OrderSide.BUY:
+            # Long: exit on bearish crossover (fast crosses below slow)
+            return bool(fast_now < slow_now and fast_prev >= slow_prev)
+        else:
+            # Short: exit on bullish crossover (fast crosses above slow)
+            return bool(fast_now > slow_now and fast_prev <= slow_prev)
