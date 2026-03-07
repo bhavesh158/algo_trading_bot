@@ -38,9 +38,13 @@ class PairSelector:
 
     def set_protected_pairs(self, symbols: set[str]) -> None:
         """Set pairs that must always be in the watchlist (have open positions)."""
-        self._protected_pairs = set(symbols)
-        if symbols:
-            logger.info("Protected pairs (open positions): %s", ", ".join(symbols))
+        new_set = set(symbols)
+        if new_set != self._protected_pairs:
+            self._protected_pairs = new_set
+            if new_set:
+                logger.info("Protected pairs updated: %s", ", ".join(sorted(new_set)))
+            else:
+                logger.info("Protected pairs cleared — no open positions")
 
     def build_watchlist(self) -> list[str]:
         """Evaluate all candidates and return the top eligible pairs."""
