@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from crypto.core.enums import AlertSeverity, MarketRegime, Timeframe
@@ -12,7 +12,7 @@ from crypto.core.models import Candle, Order, Signal, Alert
 
 class Event:
     """Base event class."""
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass
@@ -23,21 +23,21 @@ class MarketDataEvent(Event):
     price: float = 0.0
     volume: float = 0.0
     timeframe: Timeframe = Timeframe.M5
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass
 class SignalEvent(Event):
     """A strategy has generated a trading signal."""
     signal: Optional[Signal] = None
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass
 class OrderEvent(Event):
     """An order has been placed, filled, or cancelled."""
     order: Optional[Order] = None
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass
@@ -48,7 +48,7 @@ class RiskEvent(Event):
     current_value: float = 0.0
     threshold: float = 0.0
     action: str = ""
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass
@@ -56,14 +56,14 @@ class RegimeChangeEvent(Event):
     """Market regime has changed."""
     previous_regime: MarketRegime = MarketRegime.UNKNOWN
     current_regime: MarketRegime = MarketRegime.UNKNOWN
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass
 class AlertEvent(Event):
     """System alert triggered."""
     alert: Optional[Alert] = None
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass
@@ -73,7 +73,7 @@ class PortfolioUpdateEvent(Event):
     available_capital: float = 0.0
     rolling_pnl: float = 0.0
     open_positions: int = 0
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass
@@ -82,4 +82,4 @@ class ExchangeConnectionEvent(Event):
     exchange: str = ""
     connected: bool = False
     message: str = ""
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))

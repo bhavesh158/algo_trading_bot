@@ -159,7 +159,7 @@ def _position_to_dict(pos: Position) -> dict:
 
 
 def _dict_to_position(data: dict) -> Position:
-    opened_at = datetime.fromisoformat(data["opened_at"]) if data.get("opened_at") else datetime.utcnow()
+    opened_at = datetime.fromisoformat(data["opened_at"]) if data.get("opened_at") else datetime.now(timezone.utc)
     return Position(
         id=data.get("id", ""),
         symbol=data["symbol"],

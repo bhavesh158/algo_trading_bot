@@ -7,8 +7,13 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
+
+
+def _utcnow() -> datetime:
+    """Timezone-aware UTC now (datetime.utcnow is naive and deprecated)."""
+    return datetime.now(timezone.utc)
 
 from crypto.core.enums import (
     AlertSeverity,
@@ -63,7 +68,7 @@ class Signal:
     entry_price: float = 0.0
     stop_loss: float = 0.0
     target_price: float = 0.0
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=_utcnow)
     metadata: dict = field(default_factory=dict)
 
     @property
@@ -94,7 +99,7 @@ class Order:
     filled_at: Optional[datetime] = None
     filled_price: float = 0.0
     filled_quantity: float = 0.0
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=_utcnow)
 
 
 @dataclass
@@ -112,7 +117,7 @@ class Position:
     strategy_id: str = ""
     entry_order_id: str = ""
     exit_order_id: Optional[str] = None
-    opened_at: datetime = field(default_factory=datetime.utcnow)
+    opened_at: datetime = field(default_factory=_utcnow)
     closed_at: Optional[datetime] = None
 
     @property
@@ -142,7 +147,7 @@ class Trade:
     entry_price: float = 0.0
     exit_price: float = 0.0
     strategy_id: str = ""
-    entry_time: datetime = field(default_factory=datetime.utcnow)
+    entry_time: datetime = field(default_factory=_utcnow)
     exit_time: Optional[datetime] = None
     commission: float = 0.0
 
@@ -176,7 +181,7 @@ class PortfolioState:
     max_drawdown: float = 0.0
     current_drawdown: float = 0.0
     peak_capital: float = 0.0
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=_utcnow)
 
     @property
     def open_position_count(self) -> int:
@@ -220,5 +225,5 @@ class Alert:
     severity: AlertSeverity = AlertSeverity.INFO
     source: str = ""
     message: str = ""
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=_utcnow)
     acknowledged: bool = False
