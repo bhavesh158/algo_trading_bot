@@ -190,12 +190,13 @@ class ContinuousScheduler:
         # Detect market regime
         system.regime_detector.detect_regime()
 
-        # Run strategies
-        signals = system.strategy_engine.run_strategies(pairs)
+        # Run strategies — skip symbols that already have open positions
+        open_symbols = system.portfolio_manager.get_open_position_symbols()
+        signals = system.strategy_engine.run_strategies(pairs, excluded_symbols=open_symbols)
 
         # Execute signals
         for signal in signals:
-            # Re-check position limit before each order (signals batch from same cycle)
+
             if not system.risk_manager.can_take_trade(signal):
                 logger.info(
                     "BLOCKED by risk_manager: %s %s conf=%.2f",
@@ -229,6 +230,7 @@ class ContinuousScheduler:
             if filled_order.status.name == "FILLED":
                 pos = system.portfolio_manager.open_position(filled_order)
                 system.trade_journal.log_open(filled_order, pos)
+                open_symbols.add(signal.symbol)
             else:
                 logger.info(
                     "ORDER %s: %s %s qty=%.6f price=%.4f",

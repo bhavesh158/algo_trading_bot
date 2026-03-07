@@ -68,8 +68,16 @@ class StrategyEngine:
             except Exception:
                 logger.exception("Failed to load strategy: %s", name)
 
-    def run_strategies(self, symbols: list[str]) -> list[Signal]:
-        """Run all enabled strategies against the given symbols."""
+    def run_strategies(
+        self, symbols: list[str], excluded_symbols: set[str] | None = None,
+    ) -> list[Signal]:
+        """Run all enabled strategies against the given symbols.
+
+        Args:
+            symbols: Pairs to analyze.
+            excluded_symbols: Symbols to skip (e.g. those with open positions).
+        """
+        skip = excluded_symbols or set()
         signals: list[Signal] = []
 
         for name, strategy in self._strategies.items():
@@ -77,6 +85,8 @@ class StrategyEngine:
                 continue
 
             for symbol in symbols:
+                if symbol in skip:
+                    continue
                 try:
                     signal = strategy.analyze(symbol)
                     if signal is None:
