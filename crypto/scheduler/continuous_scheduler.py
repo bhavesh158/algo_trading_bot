@@ -160,6 +160,11 @@ class ContinuousScheduler:
         if system.risk_manager.is_loss_limit_breached:
             return
 
+        # Sync active order symbols from portfolio — prevents stale symbol locks
+        system.order_executor.sync_active_symbols(
+            system.portfolio_manager.get_open_position_symbols()
+        )
+
         # Update market data — fetch only the timeframes needed this cycle.
         # 5m: every cycle (for volatility monitor / price updates)
         # 15m: every 3 cycles (~48s — strategies use 15m candles)
@@ -241,24 +246,14 @@ class ContinuousScheduler:
             if pos.stop_loss > 0:
                 stop_hit = current_price <= pos.stop_loss if is_long else current_price >= pos.stop_loss
                 if stop_hit:
-                    commission = system.order_executor.get_commission(current_price * pos.quantity)
-                    trade = system.portfolio_manager.close_position(symbol, current_price, commission)
-                    if trade:
-                        system.trade_journal.log_close(trade)
-                        system.performance_monitor.record_trade(trade)
-                        system.order_executor.release_symbol(symbol)
+                    self._close_position(system, symbol, current_price, pos, "stop_loss")
                     continue
 
             # Target check (long: price rises to target; short: price falls to target)
             if pos.target_price > 0:
                 target_hit = current_price >= pos.target_price if is_long else current_price <= pos.target_price
                 if target_hit:
-                    commission = system.order_executor.get_commission(current_price * pos.quantity)
-                    trade = system.portfolio_manager.close_position(symbol, current_price, commission)
-                    if trade:
-                        system.trade_journal.log_close(trade)
-                        system.performance_monitor.record_trade(trade)
-                        system.order_executor.release_symbol(symbol)
+                    self._close_position(system, symbol, current_price, pos, "target")
                     continue
 
             # Strategy exit
@@ -271,12 +266,7 @@ class ContinuousScheduler:
                 }},
             )
             for _ in exit_signals:
-                commission = system.order_executor.get_commission(current_price * pos.quantity)
-                trade = system.portfolio_manager.close_position(symbol, current_price, commission)
-                if trade:
-                    system.trade_journal.log_close(trade)
-                    system.performance_monitor.record_trade(trade)
-                    system.order_executor.release_symbol(symbol)
+                self._close_position(system, symbol, current_price, pos, "strategy_exit")
 
         # Keep pair selector in sync with open positions
         system.pair_selector.set_protected_pairs(
@@ -288,6 +278,22 @@ class ContinuousScheduler:
             underperformers = system.performance_monitor.evaluate_strategies()
             for sid in underperformers:
                 system.strategy_engine.disable_strategy(sid)
+
+    def _close_position(
+        self, system: Any, symbol: str, current_price: float, pos: Any, reason: str,
+    ) -> None:
+        """Close a position and release the symbol — release always happens first."""
+        commission = system.order_executor.get_commission(current_price * pos.quantity)
+        trade = system.portfolio_manager.close_position(symbol, current_price, commission)
+        if not trade:
+            return
+        # Release symbol FIRST — this is critical, other calls are best-effort
+        system.order_executor.release_symbol(symbol)
+        try:
+            system.trade_journal.log_close(trade)
+            system.performance_monitor.record_trade(trade)
+        except Exception:
+            logger.exception("Error in post-close logging for %s", symbol)
 
     def _log_heartbeat(self) -> None:
         if not self._system:

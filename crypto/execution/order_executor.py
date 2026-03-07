@@ -82,6 +82,10 @@ class OrderExecutor:
     def release_symbol(self, symbol: str) -> None:
         self._active_order_symbols.discard(symbol)
 
+    def sync_active_symbols(self, open_symbols: set[str]) -> None:
+        """Sync active symbols from portfolio state — prevents permanent lock."""
+        self._active_order_symbols = set(open_symbols)
+
     def get_commission(self, notional: float) -> float:
         if self.mode == TradingMode.PAPER:
             return self._paper_trader.calculate_commission(notional)
