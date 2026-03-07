@@ -115,6 +115,32 @@ class StateManager:
             logger.exception("Corrupted state file — starting fresh")
             return None
 
+    def save_cooldowns(self, recently_closed: dict[str, datetime]) -> None:
+        """Persist close cooldowns to a separate file."""
+        path = self._dir / "cooldowns.json"
+        try:
+            data = {sym: ts.isoformat() for sym, ts in recently_closed.items()}
+            with open(path, "w") as f:
+                json.dump(data, f)
+        except Exception:
+            logger.exception("Failed to save cooldowns")
+
+    def load_cooldowns(self) -> dict[str, datetime]:
+        """Restore close cooldowns from disk."""
+        path = self._dir / "cooldowns.json"
+        if not path.exists():
+            return {}
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            cooldowns = {sym: datetime.fromisoformat(ts) for sym, ts in data.items()}
+            if cooldowns:
+                logger.info("Restored %d cooldown entries from disk", len(cooldowns))
+            return cooldowns
+        except Exception:
+            logger.exception("Failed to load cooldowns")
+            return {}
+
     def restore_positions(self, state: dict[str, Any]) -> dict[str, Position]:
         """Convert saved position dicts back to Position objects."""
         positions = {}

@@ -20,15 +20,16 @@ logger = logging.getLogger(__name__)
 
 
 class MeanReversionStrategy(BaseStrategy):
-    """Bollinger Band reversion with RSI divergence."""
+    """Bollinger Band reversion with RSI divergence and volume confirmation."""
 
     def __init__(self, config: dict[str, Any], market_data: MarketDataEngine) -> None:
         super().__init__("mean_reversion", config, market_data)
         sc = config.get("mean_reversion", {})
-        self._rsi_oversold = sc.get("rsi_oversold", 30)
-        self._rsi_overbought = sc.get("rsi_overbought", 70)
+        self._rsi_oversold = sc.get("rsi_oversold", 25)
+        self._rsi_overbought = sc.get("rsi_overbought", 75)
         self._atr_stop_mult = sc.get("atr_multiplier_stop", 1.5)
-        self._atr_target_mult = sc.get("atr_multiplier_target", 2.0)
+        self._atr_target_mult = sc.get("atr_multiplier_target", 3.0)
+        self._vol_confirm_mult = sc.get("volume_confirm_mult", 1.2)
         self.primary_timeframe = "15m"
 
     def analyze(self, symbol: str) -> Optional[Signal]:
@@ -54,24 +55,33 @@ class MeanReversionStrategy(BaseStrategy):
         bb_upper = df.get("bb_upper", pd.Series(dtype=float))
         curr_bb_upper = bb_upper.iloc[-1] if not bb_upper.empty else 0
 
+        # Volume confirmation: current candle volume must exceed average
+        volume = df.get("volume", pd.Series(dtype=float))
+        vol_sma = df.get("volume_sma", pd.Series(dtype=float))
+        if not volume.empty and not vol_sma.empty:
+            curr_vol = volume.iloc[-1]
+            avg_vol = vol_sma.iloc[-1]
+            if avg_vol > 0 and curr_vol < self._vol_confirm_mult * avg_vol:
+                return None  # insufficient volume — no conviction
+
         logger.debug(
             "[mean_reversion] %s | close=%.4f | BB_low=%.4f BB_up=%.4f | RSI=%.1f (need<%d or >%d)",
             symbol, close, curr_bb_lower, curr_bb_upper, curr_rsi,
             self._rsi_oversold, self._rsi_overbought,
         )
 
-        # Buy when price is in the lower 25% of BB range and RSI is oversold
         bb_mid = df["bb_mid"].iloc[-1] if "bb_mid" in df.columns else (curr_bb_lower + curr_bb_upper) / 2
         bb_width = curr_bb_upper - curr_bb_lower
         lower_zone = curr_bb_lower + bb_width * 0.25  # lower 25% of band
         upper_zone = curr_bb_upper - bb_width * 0.25  # upper 25% of band
 
+        # BUY: price in lower 25% of BB + RSI deeply oversold
         if close <= lower_zone and curr_rsi < self._rsi_oversold:
             stop = close - self._atr_stop_mult * curr_atr
             target = bb_mid + self._atr_target_mult * curr_atr * 0.5
 
             # Deeper oversold = higher confidence
-            confidence = min(0.5 + (self._rsi_oversold - curr_rsi) / 60, 0.85)
+            confidence = min(0.5 + (self._rsi_oversold - curr_rsi) / 50, 0.85)
 
             return Signal(
                 strategy_id=self.strategy_id,
@@ -85,12 +95,12 @@ class MeanReversionStrategy(BaseStrategy):
                 metadata={"rsi": curr_rsi, "bb_lower": curr_bb_lower},
             )
 
-        # Sell when price is in the upper 25% of BB range and RSI is overbought
+        # SELL: price in upper 25% of BB + RSI deeply overbought
         if close >= upper_zone and curr_rsi > self._rsi_overbought:
             stop = close + self._atr_stop_mult * curr_atr
             target = bb_mid - self._atr_target_mult * curr_atr * 0.5
 
-            confidence = min(0.5 + (curr_rsi - self._rsi_overbought) / 60, 0.85)
+            confidence = min(0.5 + (curr_rsi - self._rsi_overbought) / 50, 0.85)
 
             return Signal(
                 strategy_id=self.strategy_id,
@@ -110,22 +120,29 @@ class MeanReversionStrategy(BaseStrategy):
         self, symbol: str, entry_price: float, current_price: float,
         side: OrderSide = OrderSide.BUY,
     ) -> bool:
+        """Exit when RSI returns to neutral zone AND trade is in profit.
+
+        This replaces the old BB_mid exit which triggered too quickly.
+        RSI returning to ~50 means the extreme condition has genuinely reverted.
+        Requiring profit ensures we don't exit a reversion that hasn't played out.
+        """
         df = self.market_data.get_dataframe(symbol, self.primary_timeframe)
         if df.empty:
             return False
 
-        bb_mid = df.get("bb_mid", pd.Series(dtype=float))
         rsi = df.get("rsi", pd.Series(dtype=float))
-
-        if bb_mid.empty or rsi.empty:
+        if rsi.empty or pd.isna(rsi.iloc[-1]):
             return False
 
-        mid = bb_mid.iloc[-1]
         curr_rsi = rsi.iloc[-1]
 
         if side == OrderSide.BUY:
-            # Long: exit when price returns up to BB mid or RSI overbought
-            return bool(current_price >= mid or curr_rsi > self._rsi_overbought)
+            # Long: exit when RSI rises back above 50 (mean reverted) AND in profit
+            in_profit = current_price > entry_price
+            rsi_neutral = curr_rsi > 50
+            return bool(in_profit and rsi_neutral)
         else:
-            # Short: exit when price returns down to BB mid or RSI oversold
-            return bool(current_price <= mid or curr_rsi < self._rsi_oversold)
+            # Short: exit when RSI drops back below 50 AND in profit
+            in_profit = current_price < entry_price
+            rsi_neutral = curr_rsi < 50
+            return bool(in_profit and rsi_neutral)

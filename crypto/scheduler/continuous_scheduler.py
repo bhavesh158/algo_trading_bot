@@ -44,6 +44,10 @@ class ContinuousScheduler:
         self._close_cooldown_seconds = sched.get("close_cooldown_seconds", 300)  # 5 min
         # Anti-churn: minimum stop distance as fraction of entry price
         self._min_stop_distance_pct = sched.get("min_stop_distance_pct", 0.4) / 100  # 0.4%
+        # Anti-churn: minimum hold time before strategy/target exits (stop loss always fires)
+        self._min_hold_seconds = sched.get("min_hold_seconds", 120)  # 2 min
+        # Cost filter: reject signals with expected profit below this %
+        self._min_expected_profit_pct = sched.get("min_expected_profit_pct", 0.5) / 100
 
         logger.info("ContinuousScheduler initialized (interval=%ds)", self._loop_interval)
 
@@ -89,6 +93,9 @@ class ContinuousScheduler:
 
         system = self._system
         logger.info("=== INITIAL SETUP ===")
+
+        # Restore cooldowns from previous run (survives restarts)
+        self._recently_closed = system.portfolio_manager.state_manager.load_cooldowns()
 
         # Build trading pair watchlist
         system.pair_selector.build_watchlist()
@@ -216,6 +223,17 @@ class ContinuousScheduler:
                 if remaining > 0:
                     continue
 
+            # Cost filter: reject signals where expected profit < min threshold
+            if signal.target_price > 0 and signal.entry_price > 0:
+                expected_profit_pct = abs(signal.target_price - signal.entry_price) / signal.entry_price
+                if expected_profit_pct < self._min_expected_profit_pct:
+                    logger.debug(
+                        "BLOCKED low profit: %s %s expected=%.2f%% min=%.2f%%",
+                        signal.side.name, signal.symbol,
+                        expected_profit_pct * 100, self._min_expected_profit_pct * 100,
+                    )
+                    continue
+
             # Enforce minimum stop distance to prevent micro-stops in low-vol
             stop_dist = abs(signal.entry_price - signal.stop_loss)
             min_dist = signal.entry_price * self._min_stop_distance_pct
@@ -277,18 +295,24 @@ class ContinuousScheduler:
 
         # Check exits for open positions (skip those opened this cycle)
         open_positions = system.portfolio_manager.get_open_positions()
+        now_exit = datetime.now(timezone.utc)
         for symbol, pos in open_positions.items():
             if symbol in opened_this_cycle:
                 continue
             current_price = system.market_data_engine.get_current_price(symbol)
             is_long = pos.side == OrderSide.BUY
 
-            # Stop loss check (long: price falls to stop; short: price rises to stop)
+            # Stop loss ALWAYS fires immediately — non-negotiable risk management
             if pos.stop_loss > 0:
                 stop_hit = current_price <= pos.stop_loss if is_long else current_price >= pos.stop_loss
                 if stop_hit:
                     self._close_position(system, symbol, current_price, pos, "stop_loss")
                     continue
+
+            # Minimum hold time: skip target + strategy exits for young positions
+            hold_secs = (now_exit - pos.opened_at).total_seconds() if pos.opened_at else 9999
+            if hold_secs < self._min_hold_seconds:
+                continue
 
             # Target check (long: price rises to target; short: price falls to target)
             if pos.target_price > 0:
@@ -331,8 +355,12 @@ class ContinuousScheduler:
             return
         # Release symbol FIRST — this is critical, other calls are best-effort
         system.order_executor.release_symbol(symbol)
-        # Record cooldown to prevent immediate re-entry
+        # Record cooldown to prevent immediate re-entry and persist to disk
         self._recently_closed[symbol] = datetime.now(timezone.utc)
+        try:
+            system.portfolio_manager.state_manager.save_cooldowns(self._recently_closed)
+        except Exception:
+            logger.exception("Failed to persist cooldowns for %s", symbol)
         try:
             system.trade_journal.log_close(trade)
             system.performance_monitor.record_trade(trade)
