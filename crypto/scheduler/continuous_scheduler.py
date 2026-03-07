@@ -39,6 +39,12 @@ class ContinuousScheduler:
         self._last_risk_reset = datetime.min.replace(tzinfo=timezone.utc)
         self._system = None
 
+        # Anti-churn: cooldown after closing a position
+        self._recently_closed: dict[str, datetime] = {}  # symbol -> close time
+        self._close_cooldown_seconds = sched.get("close_cooldown_seconds", 300)  # 5 min
+        # Anti-churn: minimum stop distance as fraction of entry price
+        self._min_stop_distance_pct = sched.get("min_stop_distance_pct", 0.4) / 100  # 0.4%
+
         logger.info("ContinuousScheduler initialized (interval=%ds)", self._loop_interval)
 
     def set_trading_system(self, system: Any) -> None:
@@ -194,8 +200,35 @@ class ContinuousScheduler:
         open_symbols = system.portfolio_manager.get_open_position_symbols()
         signals = system.strategy_engine.run_strategies(pairs, excluded_symbols=open_symbols)
 
+        # Clean up stale cooldown entries
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(seconds=self._close_cooldown_seconds * 2)
+        self._recently_closed = {s: t for s, t in self._recently_closed.items() if t > cutoff}
+
         # Execute signals
+        opened_this_cycle: set[str] = set()
         for signal in signals:
+
+            # Cooldown: skip symbols that were recently closed
+            closed_at = self._recently_closed.get(signal.symbol)
+            if closed_at:
+                remaining = self._close_cooldown_seconds - (now - closed_at).total_seconds()
+                if remaining > 0:
+                    continue
+
+            # Enforce minimum stop distance to prevent micro-stops in low-vol
+            stop_dist = abs(signal.entry_price - signal.stop_loss)
+            min_dist = signal.entry_price * self._min_stop_distance_pct
+            if stop_dist < min_dist:
+                if signal.side == OrderSide.BUY:
+                    signal.stop_loss = signal.entry_price * (1 - self._min_stop_distance_pct)
+                else:
+                    signal.stop_loss = signal.entry_price * (1 + self._min_stop_distance_pct)
+                logger.debug(
+                    "Widened stop for %s %s: %.4f -> %.4f (min %.2f%%)",
+                    signal.side.name, signal.symbol, signal.entry_price,
+                    signal.stop_loss, self._min_stop_distance_pct * 100,
+                )
 
             if not system.risk_manager.can_take_trade(signal):
                 logger.info(
@@ -231,6 +264,7 @@ class ContinuousScheduler:
                 pos = system.portfolio_manager.open_position(filled_order)
                 system.trade_journal.log_open(filled_order, pos)
                 open_symbols.add(signal.symbol)
+                opened_this_cycle.add(signal.symbol)
             else:
                 logger.info(
                     "ORDER %s: %s %s qty=%.6f price=%.4f",
@@ -238,9 +272,11 @@ class ContinuousScheduler:
                     signal.symbol, quantity, current_price,
                 )
 
-        # Check exits for open positions
+        # Check exits for open positions (skip those opened this cycle)
         open_positions = system.portfolio_manager.get_open_positions()
         for symbol, pos in open_positions.items():
+            if symbol in opened_this_cycle:
+                continue
             current_price = system.market_data_engine.get_current_price(symbol)
             is_long = pos.side == OrderSide.BUY
 
@@ -291,6 +327,8 @@ class ContinuousScheduler:
             return
         # Release symbol FIRST — this is critical, other calls are best-effort
         system.order_executor.release_symbol(symbol)
+        # Record cooldown to prevent immediate re-entry
+        self._recently_closed[symbol] = datetime.now(timezone.utc)
         try:
             system.trade_journal.log_close(trade)
             system.performance_monitor.record_trade(trade)
