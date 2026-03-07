@@ -5,16 +5,19 @@ on close, including P&L) is logged here. The ledger can always be replayed
 to reconcile the current balance.
 
 Columns:
-    timestamp   — UTC ISO timestamp
-    event       — INITIAL | POSITION_OPEN | POSITION_CLOSE | COMMISSION | ADJUSTMENT
-    symbol      — trading pair (or blank for non-trade events)
-    side        — BUY/SELL (or blank)
-    debit       — capital going out (positive number)
-    credit      — capital coming in (positive number)
-    pnl         — realized P&L on this event (blank for opens)
-    balance     — available capital after this event
+    timestamp     — UTC ISO timestamp
+    event         — INITIAL | RESTORE | POSITION_OPEN | POSITION_CLOSE
+    symbol        — trading pair (or blank for non-trade events)
+    side          — BUY/SELL (or blank)
+    debit         — capital going out (notional + entry fee on OPEN)
+    credit        — capital coming in (notional + net_pnl on CLOSE)
+    gross_pnl     — P&L before fees and tax
+    commission    — total trading fees (entry + exit)
+    tax           — 30% profit tax (only on gross profit)
+    net_pnl       — gross_pnl - commission - tax
+    balance       — available capital after this event
     total_capital — total capital (available + allocated) after this event
-    details     — human-readable note
+    details       — human-readable note
 """
 
 from __future__ import annotations

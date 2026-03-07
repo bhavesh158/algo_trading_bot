@@ -55,23 +55,28 @@ class PortfolioManager:
         if not saved:
             return False
 
-        positions = saved.get("positions", {})
-        if not positions:
+        # Always restore capital if we have a valid state file — even with
+        # no open positions, the capital reflects accumulated P&L from
+        # previous trades and must not be reset to initial_capital.
+        capital = saved.get("capital", {})
+        if not capital:
             return False
 
-        capital = saved.get("capital", {})
         self._total_capital = capital.get("total", default_capital)
         self._available_capital = capital.get("available", default_capital)
         self._peak_capital = capital.get("peak", default_capital)
         self._rolling_pnl = capital.get("rolling_pnl", 0.0)
 
-        self._positions = self.state_manager.restore_positions(saved)
+        positions = saved.get("positions", {})
+        if positions:
+            self._positions = self.state_manager.restore_positions(saved)
+
         self.ledger.log_restore(
             len(self._positions), self._available_capital, self._total_capital,
         )
         logger.info(
-            "Restored %d open positions from saved state (capital=%.2f)",
-            len(self._positions), self._total_capital,
+            "Restored state from disk (capital=%.2f, positions=%d)",
+            self._total_capital, len(self._positions),
         )
         return True
 
