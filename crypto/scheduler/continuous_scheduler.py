@@ -261,7 +261,10 @@ class ContinuousScheduler:
             filled_order = system.order_executor.execute_order(order, current_price)
 
             if filled_order.status.name == "FILLED":
-                pos = system.portfolio_manager.open_position(filled_order)
+                entry_comm = system.order_executor.get_commission(
+                    filled_order.filled_price * filled_order.filled_quantity
+                )
+                pos = system.portfolio_manager.open_position(filled_order, entry_commission=entry_comm)
                 system.trade_journal.log_open(filled_order, pos)
                 open_symbols.add(signal.symbol)
                 opened_this_cycle.add(signal.symbol)

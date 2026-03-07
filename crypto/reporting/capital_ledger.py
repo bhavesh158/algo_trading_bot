@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 _HEADERS = [
     "timestamp", "event", "symbol", "side",
-    "debit", "credit", "pnl",
+    "debit", "credit", "gross_pnl", "commission", "tax", "net_pnl",
     "balance", "total_capital", "details",
 ]
 
@@ -52,41 +52,59 @@ class CapitalLedger:
 
     def log_initial(self, capital: float) -> None:
         """Log the starting capital."""
-        self._append("INITIAL", "", "", 0, capital, 0, capital, capital,
-                      f"Starting capital: {capital:.2f}")
+        self._append("INITIAL", "", "",
+                      debit=0, credit=capital,
+                      gross_pnl=0, commission=0, tax=0, net_pnl=0,
+                      balance=capital, total_capital=capital,
+                      details=f"Starting capital: {capital:.2f}")
 
     def log_restore(self, positions_count: int, available: float, total: float) -> None:
         """Log state restoration from crash recovery."""
-        self._append("RESTORE", "", "", 0, 0, 0, available, total,
-                      f"Restored {positions_count} positions from saved state")
+        self._append("RESTORE", "", "",
+                      debit=0, credit=0,
+                      gross_pnl=0, commission=0, tax=0, net_pnl=0,
+                      balance=available, total_capital=total,
+                      details=f"Restored {positions_count} positions from saved state")
 
     def log_open(
         self, symbol: str, side: str, notional: float,
+        commission: float,
         available_after: float, total_capital: float,
     ) -> None:
-        """Log capital allocated to a new position."""
+        """Log capital allocated to a new position (debit = notional + entry fee)."""
+        total_debit = notional + commission
+        details = f"Allocated {notional:.4f} to {side} {symbol}"
+        if commission > 0:
+            details += f", entry_fee={commission:.4f}"
         self._append("POSITION_OPEN", symbol, side,
-                      notional, 0, 0,
-                      available_after, total_capital,
-                      f"Allocated {notional:.4f} to {side} {symbol}")
+                      debit=total_debit, credit=0,
+                      gross_pnl=0, commission=commission, tax=0, net_pnl=0,
+                      balance=available_after, total_capital=total_capital,
+                      details=details)
 
     def log_close(
         self, symbol: str, side: str,
-        notional_returned: float, pnl: float, commission: float,
+        notional_returned: float,
+        gross_pnl: float, commission: float, tax: float, net_pnl: float,
         available_after: float, total_capital: float,
     ) -> None:
         """Log capital returned from a closed position."""
-        credit = notional_returned + pnl
-        details = f"Closed {side} {symbol}: returned {notional_returned:.4f}, pnl={pnl:+.4f}"
-        if commission > 0:
-            details += f", commission={commission:.4f}"
+        credit = notional_returned + net_pnl
+        details = (
+            f"Closed {side} {symbol}: gross={gross_pnl:+.4f},"
+            f" comm={commission:.4f}, tax={tax:.4f}, net={net_pnl:+.4f}"
+        )
         self._append("POSITION_CLOSE", symbol, side,
-                      0, credit, pnl,
-                      available_after, total_capital, details)
+                      debit=0, credit=credit,
+                      gross_pnl=gross_pnl, commission=commission,
+                      tax=tax, net_pnl=net_pnl,
+                      balance=available_after, total_capital=total_capital,
+                      details=details)
 
     def _append(
         self, event: str, symbol: str, side: str,
-        debit: float, credit: float, pnl: float,
+        debit: float, credit: float,
+        gross_pnl: float, commission: float, tax: float, net_pnl: float,
         balance: float, total_capital: float, details: str,
     ) -> None:
         row = [
@@ -96,7 +114,10 @@ class CapitalLedger:
             side,
             f"{debit:.4f}" if debit else "",
             f"{credit:.4f}" if credit else "",
-            f"{pnl:+.4f}" if pnl else "",
+            f"{gross_pnl:+.4f}" if gross_pnl else "",
+            f"{commission:.4f}" if commission else "",
+            f"{tax:.4f}" if tax else "",
+            f"{net_pnl:+.4f}" if net_pnl else "",
             f"{balance:.4f}",
             f"{total_capital:.4f}",
             details,

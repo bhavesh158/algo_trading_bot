@@ -148,6 +148,11 @@ paper_trading:
   maker_fee_pct: 0.1
   taker_fee_pct: 0.1
 
+# --- Account ---
+account:
+  initial_capital: 1000.0
+  profit_tax_pct: 30.0  # India: 30% flat tax on crypto gains
+
 # --- Scheduler ---
 scheduler:
   main_loop_interval_seconds: 10

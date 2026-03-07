@@ -27,6 +27,7 @@ class TradeJournal:
         "timestamp", "event", "symbol", "side", "quantity",
         "entry_price", "exit_price", "pnl", "pnl_pct",
         "commission", "strategy_id", "hold_duration",
+        "gross_pnl", "tax",
     ]
 
     def __init__(self, config: dict[str, Any]) -> None:
@@ -47,6 +48,7 @@ class TradeJournal:
                     "timestamp", "event", "symbol", "side", "quantity",
                     "entry_price", "exit_price", "stop_loss", "target_price",
                     "pnl", "pnl_pct", "commission", "strategy_id", "hold_duration",
+                    "gross_pnl", "tax",
                 ])
 
     def log_open(self, order: Order, position: Position) -> None:
@@ -92,6 +94,8 @@ class TradeJournal:
             f"{trade.commission:.4f}",
             trade.strategy_id,
             hold,
+            f"{trade.gross_pnl:.4f}",
+            f"{trade.tax:.4f}",
         ]
         self._append_row(row)
 

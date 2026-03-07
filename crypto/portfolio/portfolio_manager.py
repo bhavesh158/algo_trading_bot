@@ -29,7 +29,9 @@ class PortfolioManager:
         self.state_manager = StateManager(config)
         self.ledger = CapitalLedger(config)
 
-        initial = config.get("account", {}).get("initial_capital", 1000.0)
+        acct = config.get("account", {})
+        initial = acct.get("initial_capital", 1000.0)
+        self._profit_tax_rate = acct.get("profit_tax_pct", 30.0) / 100  # e.g. 30%
         self._total_capital = initial
         self._available_capital = initial
         self._peak_capital = initial
@@ -98,7 +100,7 @@ class PortfolioManager:
             peak_capital=self._peak_capital,
         )
 
-    def open_position(self, order: Order) -> Position:
+    def open_position(self, order: Order, entry_commission: float = 0.0) -> Position:
         """Create a new position from a filled order."""
         position = Position(
             symbol=order.symbol,
@@ -110,16 +112,18 @@ class PortfolioManager:
             target_price=order.target_price,
             strategy_id=order.strategy_id,
             entry_order_id=order.id,
+            entry_commission=entry_commission,
         )
 
         notional = order.filled_price * order.filled_quantity
-        self._available_capital -= notional
+        self._available_capital -= notional + entry_commission
         self._positions[order.symbol] = position
 
         self.ledger.log_open(
             symbol=order.symbol,
             side=order.side.name,
             notional=notional,
+            commission=entry_commission,
             available_after=self._available_capital,
             total_capital=self._total_capital,
         )
@@ -132,7 +136,7 @@ class PortfolioManager:
         self._save_state()
         return position
 
-    def close_position(self, symbol: str, exit_price: float, commission: float = 0.0) -> Optional[Trade]:
+    def close_position(self, symbol: str, exit_price: float, exit_commission: float = 0.0) -> Optional[Trade]:
         """Close an open position and record the trade."""
         pos = self._positions.get(symbol)
         if not pos or pos.status != PositionStatus.OPEN:
@@ -141,6 +145,15 @@ class PortfolioManager:
         pos.status = PositionStatus.CLOSED
         pos.closed_at = datetime.now(timezone.utc)
         pos.current_price = exit_price
+
+        total_commission = pos.entry_commission + exit_commission
+
+        # Calculate gross P&L (before fees/tax)
+        multiplier = 1 if pos.side == OrderSide.BUY else -1
+        gross_pnl = multiplier * (exit_price - pos.entry_price) * pos.quantity
+
+        # Tax on gross profit only (before commission), applied only if profitable
+        tax = max(0.0, gross_pnl) * self._profit_tax_rate
 
         trade = Trade(
             symbol=symbol,
@@ -151,12 +164,15 @@ class PortfolioManager:
             strategy_id=pos.strategy_id,
             entry_time=pos.opened_at,
             exit_time=pos.closed_at,
-            commission=commission,
+            commission=total_commission,
+            tax=tax,
         )
 
-        # Return capital + P&L
+        # Return capital + net P&L (gross - commission - tax)
+        # Note: entry_commission was already deducted on open, so we add it
+        # back into notional return, and let trade.pnl handle the full deduction.
         notional = pos.entry_price * pos.quantity
-        self._available_capital += notional + trade.pnl
+        self._available_capital += notional + pos.entry_commission + trade.pnl
         self._total_capital += trade.pnl
         self._rolling_pnl += trade.pnl
         self._pnl_entries.append((datetime.now(timezone.utc), trade.pnl))
@@ -168,15 +184,18 @@ class PortfolioManager:
             symbol=symbol,
             side=trade.side.name,
             notional_returned=notional,
-            pnl=trade.pnl,
-            commission=commission,
+            gross_pnl=trade.gross_pnl,
+            commission=total_commission,
+            tax=tax,
+            net_pnl=trade.pnl,
             available_after=self._available_capital,
             total_capital=self._total_capital,
         )
 
         logger.info(
-            "Position closed: %s %s pnl=%.4f (%.2f%%)",
-            symbol, trade.side.name, trade.pnl, trade.pnl_pct,
+            "Position closed: %s %s gross=%.4f comm=%.4f tax=%.4f net=%.4f (%.2f%%)",
+            symbol, trade.side.name, trade.gross_pnl, total_commission,
+            tax, trade.pnl, trade.pnl_pct,
         )
         self._publish_update()
         self._save_state()
