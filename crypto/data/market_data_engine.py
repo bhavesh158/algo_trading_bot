@@ -51,11 +51,17 @@ class MarketDataEngine:
         loaded = sum(1 for s in self._data if self._data[s])
         logger.info("Historical data loaded for %d/%d symbols", loaded, len(symbols))
 
-    def update_data(self, symbols: list[str]) -> None:
-        """Fetch latest candle data and append to cache."""
+    def update_data(self, symbols: list[str], timeframes: list[str] | None = None) -> None:
+        """Fetch latest candle data and append to cache.
+
+        Args:
+            symbols: Pairs to update.
+            timeframes: Specific timeframes to fetch. Defaults to all configured.
+        """
+        tfs = timeframes if timeframes is not None else self._timeframes
         for symbol in symbols:
             self._data.setdefault(symbol, {})
-            for tf in self._timeframes:
+            for tf in tfs:
                 df = self.provider.fetch_ohlcv(symbol, tf, limit=5)
                 if df.empty:
                     continue

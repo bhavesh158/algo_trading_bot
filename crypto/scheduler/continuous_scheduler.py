@@ -160,8 +160,16 @@ class ContinuousScheduler:
         if system.risk_manager.is_loss_limit_breached:
             return
 
-        # Update market data
-        system.market_data_engine.update_data(pairs)
+        # Update market data — fetch only the timeframes needed this cycle.
+        # 5m: every cycle (for volatility monitor / price updates)
+        # 15m: every 3 cycles (~48s — strategies use 15m candles)
+        # 1h:  every 12 cycles (~3min — breakout uses 1h candles)
+        tfs = ["5m"]
+        if self._cycle_count % 3 == 0:
+            tfs.append("15m")
+        if self._cycle_count % 12 == 0:
+            tfs.append("1h")
+        system.market_data_engine.update_data(pairs, timeframes=tfs)
 
         # Update position prices
         for symbol, pos in system.portfolio_manager.get_open_positions().items():
@@ -184,10 +192,18 @@ class ContinuousScheduler:
         for signal in signals:
             # Re-check position limit before each order (signals batch from same cycle)
             if not system.risk_manager.can_take_trade(signal):
+                logger.info(
+                    "BLOCKED by risk_manager: %s %s conf=%.2f",
+                    signal.side.name, signal.symbol, signal.confidence,
+                )
                 continue
 
             quantity = system.position_sizer.calculate_quantity(signal)
             if quantity <= 0:
+                logger.info(
+                    "BLOCKED zero quantity: %s %s entry=%.4f stop=%.4f",
+                    signal.side.name, signal.symbol, signal.entry_price, signal.stop_loss,
+                )
                 continue
 
             order = Order(
@@ -208,6 +224,12 @@ class ContinuousScheduler:
             if filled_order.status.name == "FILLED":
                 pos = system.portfolio_manager.open_position(filled_order)
                 system.trade_journal.log_open(filled_order, pos)
+            else:
+                logger.info(
+                    "ORDER %s: %s %s qty=%.6f price=%.4f",
+                    filled_order.status.name, signal.side.name,
+                    signal.symbol, quantity, current_price,
+                )
 
         # Check exits for open positions
         open_positions = system.portfolio_manager.get_open_positions()
