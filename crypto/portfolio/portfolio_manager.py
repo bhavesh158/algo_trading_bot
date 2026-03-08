@@ -157,8 +157,9 @@ class PortfolioManager:
         multiplier = 1 if pos.side == OrderSide.BUY else -1
         gross_pnl = multiplier * (exit_price - pos.entry_price) * pos.quantity
 
-        # Tax on gross profit only (before commission), applied only if profitable
-        tax = max(0.0, gross_pnl) * self._profit_tax_rate
+        # Tax on profit AFTER commission — taxable income = gross - costs
+        taxable = max(0.0, gross_pnl - total_commission)
+        tax = taxable * self._profit_tax_rate
 
         trade = Trade(
             symbol=symbol,

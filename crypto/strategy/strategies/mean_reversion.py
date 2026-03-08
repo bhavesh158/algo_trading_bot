@@ -30,6 +30,7 @@ class MeanReversionStrategy(BaseStrategy):
         self._atr_stop_mult = sc.get("atr_multiplier_stop", 1.5)
         self._atr_target_mult = sc.get("atr_multiplier_target", 3.0)
         self._vol_confirm_mult = sc.get("volume_confirm_mult", 1.2)
+        self._min_exit_profit_pct = sc.get("min_exit_profit_pct", 1.0) / 100  # 1.0%
         self.primary_timeframe = "15m"
 
     def analyze(self, symbol: str) -> Optional[Signal]:
@@ -137,12 +138,15 @@ class MeanReversionStrategy(BaseStrategy):
         curr_rsi = rsi.iloc[-1]
 
         if side == OrderSide.BUY:
-            # Long: exit when RSI rises back above 50 (mean reverted) AND in profit
-            in_profit = current_price > entry_price
+            # Long: exit when RSI rises back above 50 AND profit exceeds min threshold
+            # The threshold ensures we don't exit with crumbs that get eaten by fees/tax
+            price_move = (current_price - entry_price) / entry_price
+            in_profit = price_move > self._min_exit_profit_pct
             rsi_neutral = curr_rsi > 50
             return bool(in_profit and rsi_neutral)
         else:
-            # Short: exit when RSI drops back below 50 AND in profit
-            in_profit = current_price < entry_price
+            # Short: exit when RSI drops back below 50 AND meaningful profit
+            price_move = (entry_price - current_price) / entry_price
+            in_profit = price_move > self._min_exit_profit_pct
             rsi_neutral = curr_rsi < 50
             return bool(in_profit and rsi_neutral)

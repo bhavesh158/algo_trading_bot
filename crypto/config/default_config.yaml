@@ -85,6 +85,7 @@ mean_reversion:
   atr_multiplier_stop: 1.5
   atr_multiplier_target: 3.0       # Wider targets — let reversion play out (was 2.0)
   volume_confirm_mult: 1.2         # Require 1.2x avg volume for entry
+  min_exit_profit_pct: 1.0         # Don't strategy-exit below 1.0% profit (covers fees+tax+risk)
 
 breakout_momentum:
   lookback_period: 20
