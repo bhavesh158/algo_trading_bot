@@ -161,6 +161,7 @@ scheduler:
   heartbeat_interval_cycles: 30    # ~5 min at 10s interval
   min_hold_seconds: 120            # Don't exit (except stop-loss) within 2 min of open
   min_expected_profit_pct: 0.5     # Reject signals with <0.5% expected profit
+  max_entries_per_cycle: 2         # Max new positions per cycle (prevents correlated batch entries)
 
 # --- Reporting ---
 reporting:

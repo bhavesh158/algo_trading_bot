@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 _REGIME_BLOCK_MR_BUY = {MarketRegime.TRENDING_DOWN, MarketRegime.HIGH_VOLATILITY}
 # Regimes where mean reversion SELL is dangerous
 _REGIME_BLOCK_MR_SELL = {MarketRegime.TRENDING_UP, MarketRegime.HIGH_VOLATILITY}
+# Regimes where trend_following is dangerous (whipsaw / unreliable EMA crossovers)
+_REGIME_BLOCK_TF = {MarketRegime.HIGH_VOLATILITY}
 
 
 class StrategyEngine:
@@ -111,13 +113,15 @@ class StrategyEngine:
                     if signal.confidence < self._confidence_threshold:
                         continue
 
-                    # Regime filter: block counter-trend mean reversion signals
+                    # Regime filter
                     regime = self.regime_detector.current_regime if self.regime_detector else MarketRegime.UNKNOWN
                     if name == "mean_reversion":
                         if signal.side == OrderSide.BUY and regime in _REGIME_BLOCK_MR_BUY:
                             continue
                         if signal.side == OrderSide.SELL and regime in _REGIME_BLOCK_MR_SELL:
                             continue
+                    if name == "trend_following" and regime in _REGIME_BLOCK_TF:
+                        continue
 
                     # Risk check
                     if not self.risk_manager.can_take_trade(signal):

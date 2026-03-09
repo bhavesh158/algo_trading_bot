@@ -48,6 +48,8 @@ class ContinuousScheduler:
         self._min_hold_seconds = sched.get("min_hold_seconds", 120)  # 2 min
         # Cost filter: reject signals with expected profit below this %
         self._min_expected_profit_pct = sched.get("min_expected_profit_pct", 0.5) / 100
+        # Max new entries per cycle — prevents correlated batch entries
+        self._max_entries_per_cycle = sched.get("max_entries_per_cycle", 2)
 
         logger.info("ContinuousScheduler initialized (interval=%ds)", self._loop_interval)
 
@@ -212,9 +214,11 @@ class ContinuousScheduler:
         cutoff = now - timedelta(seconds=self._close_cooldown_seconds * 2)
         self._recently_closed = {s: t for s, t in self._recently_closed.items() if t > cutoff}
 
-        # Execute signals
+        # Execute signals (capped to prevent correlated batch entries)
         opened_this_cycle: set[str] = set()
         for signal in signals:
+            if len(opened_this_cycle) >= self._max_entries_per_cycle:
+                break
 
             # Cooldown: skip symbols that were recently closed
             closed_at = self._recently_closed.get(signal.symbol)
