@@ -110,6 +110,7 @@ class Position:
     exit_order_id: Optional[str] = None
     opened_at: datetime = field(default_factory=datetime.now)
     closed_at: Optional[datetime] = None
+    entry_commission: float = 0.0  # Fee paid when opening the position
 
     @property
     def unrealized_pnl(self) -> float:
@@ -122,6 +123,10 @@ class Position:
             return 0.0
         multiplier = 1 if self.side == OrderSide.BUY else -1
         return multiplier * (self.current_price - self.entry_price) / self.entry_price * 100
+
+    @property
+    def notional_value(self) -> float:
+        return abs(self.current_price * self.quantity)
 
 
 @dataclass
@@ -136,20 +141,26 @@ class Trade:
     strategy_id: str = ""
     entry_time: datetime = field(default_factory=datetime.now)
     exit_time: Optional[datetime] = None
-    commission: float = 0.0
+    commission: float = 0.0  # Total commission (entry + exit)
+    tax: float = 0.0  # Tax on profitable trades
+
+    @property
+    def gross_pnl(self) -> float:
+        """P&L before any fees or taxes."""
+        multiplier = 1 if self.side == OrderSide.BUY else -1
+        return multiplier * (self.exit_price - self.entry_price) * self.quantity
 
     @property
     def pnl(self) -> float:
-        multiplier = 1 if self.side == OrderSide.BUY else -1
-        gross = multiplier * (self.exit_price - self.entry_price) * self.quantity
-        return gross - self.commission
+        """Net P&L after commission and tax."""
+        return self.gross_pnl - self.commission - self.tax
 
     @property
     def pnl_pct(self) -> float:
         if self.entry_price == 0:
             return 0.0
-        multiplier = 1 if self.side == OrderSide.BUY else -1
-        return multiplier * (self.exit_price - self.entry_price) / self.entry_price * 100
+        notional = self.entry_price * self.quantity
+        return self.pnl / notional * 100 if notional else 0.0
 
     @property
     def is_winner(self) -> bool:

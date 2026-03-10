@@ -241,11 +241,13 @@ class TradingScheduler:
             filled_order = system.order_executor.execute_order(order, current_price)
 
             if filled_order.status.name == "FILLED":
-                system.portfolio_manager.open_position(filled_order)
+                entry_comm = system.order_executor.commission
+                pos = system.portfolio_manager.open_position(filled_order, entry_commission=entry_comm)
+                system.trade_journal.log_open(filled_order, pos)
 
         # Check exit conditions for open positions
         open_positions = system.portfolio_manager.get_open_positions()
-        for symbol, pos in open_positions.items():
+        for symbol, pos in list(open_positions.items()):
             current_price = system.market_data_engine.get_current_price(symbol)
             exit_signals = system.strategy_engine.check_exits(
                 [symbol],
@@ -256,10 +258,12 @@ class TradingScheduler:
                 }},
             )
             for exit_sig in exit_signals:
+                exit_comm = system.order_executor.commission
                 trade = system.portfolio_manager.close_position(
-                    symbol, current_price, system.order_executor.commission
+                    symbol, current_price, exit_comm
                 )
                 if trade:
+                    system.trade_journal.log_close(trade)
                     system.performance_monitor.record_trade(trade)
                     system.order_executor.release_symbol(symbol)
 
@@ -272,9 +276,13 @@ class TradingScheduler:
         """Pre-close phase: close positions, cancel orders, generate report."""
         logger.info("--- PRE-CLOSE PHASE ---")
 
-        # Close all open positions
+        # Close all open positions (with commission)
+        def _get_exit_comm(sym: str, notional: float) -> float:
+            return system.order_executor.commission
+
         system.portfolio_manager.close_all_positions(
-            lambda sym: system.market_data_engine.get_current_price(sym)
+            lambda sym: system.market_data_engine.get_current_price(sym),
+            exit_commission_fn=_get_exit_comm,
         )
 
         # Cancel pending orders

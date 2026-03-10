@@ -66,8 +66,10 @@ class TradingSystem:
         from stocks.scheduler.trading_scheduler import TradingScheduler
         from stocks.reporting.report_generator import ReportGenerator
         from stocks.reporting.alert_manager import AlertManager
+        from stocks.reporting.trade_journal import TradeJournal
 
         # Instantiate components (order matters for dependency chain)
+        self.trade_journal = TradeJournal(self.config)
         self.alert_manager = AlertManager(self.config, self.event_bus)
         self.portfolio_manager = PortfolioManager(self.config, self.event_bus)
         self.risk_manager = RiskManager(self.config, self.event_bus, self.portfolio_manager)
@@ -89,6 +91,7 @@ class TradingSystem:
         self.scheduler = TradingScheduler(self.config, self.event_bus)
 
         self._components = [
+            self.trade_journal,
             self.alert_manager,
             self.portfolio_manager,
             self.risk_manager,
@@ -156,11 +159,17 @@ class TradingSystem:
             self.shutdown()
 
     def shutdown(self) -> None:
-        """Graceful shutdown of all components."""
+        """Graceful shutdown — save state for mid-day recovery."""
         if not self._running:
             return
         self._running = False
         logger.info("Shutting down trading system...")
+
+        # Save state so mid-day restarts can resume
+        open_count = len(self.portfolio_manager.get_open_positions())
+        self.portfolio_manager._save_state()
+        logger.info("Saved state with %d open position(s) for restart", open_count)
+
         self.report_generator.generate_daily_report()
         self.event_bus.clear()
         logger.info("Trading system stopped.")

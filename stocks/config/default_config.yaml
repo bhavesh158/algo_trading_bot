@@ -13,6 +13,7 @@ system:
 account:
   initial_capital: 100000.0
   currency: INR
+  profit_tax_pct: 15.0     # Short-term capital gains tax on equity profits
 
 # --- Market Hours (IST) ---
 schedule:
