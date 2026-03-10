@@ -23,14 +23,23 @@ from stocks.data.market_data_engine import MarketDataEngine
 logger = logging.getLogger(__name__)
 
 # Nifty 50 constituent symbols (Yahoo format: SYMBOL.NS)
-# This is a representative subset — in production, fetch dynamically.
+# Full Nifty 50 + select Nifty Next 50 high-volume names.
 NIFTY50_SYMBOLS = [
+    # --- Nifty 50 ---
     "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
     "HINDUNILVR.NS", "ITC.NS", "SBIN.NS", "BHARTIARTL.NS", "KOTAKBANK.NS",
     "LT.NS", "AXISBANK.NS", "BAJFINANCE.NS", "ASIANPAINT.NS", "MARUTI.NS",
     "TITAN.NS", "SUNPHARMA.NS", "ULTRACEMCO.NS", "NESTLEIND.NS", "WIPRO.NS",
     "TRENT.NS", "HCLTECH.NS", "M&M.NS", "NTPC.NS", "POWERGRID.NS",
     "TATASTEEL.NS", "INDUSINDBK.NS", "BAJAJFINSV.NS", "JSWSTEEL.NS", "ADANIPORTS.NS",
+    "ONGC.NS", "COALINDIA.NS", "BPCL.NS", "GRASIM.NS", "CIPLA.NS",
+    "DRREDDY.NS", "DIVISLAB.NS", "EICHERMOT.NS", "APOLLOHOSP.NS", "TECHM.NS",
+    "HEROMOTOCO.NS", "BRITANNIA.NS", "HINDALCO.NS", "SHRIRAMFIN.NS", "BEL.NS",
+    "TATACONSUM.NS", "HDFCLIFE.NS", "SBILIFE.NS", "ADANIENT.NS", "TATAMOTORS.NS",
+    # --- Nifty Next 50 (high volume picks) ---
+    "HAL.NS", "BANKBARODA.NS", "IOC.NS", "PNB.NS", "IRFC.NS",
+    "ZOMATO.NS", "JIOFIN.NS", "DLF.NS", "ABB.NS", "VEDL.NS",
+    "TATAPOWER.NS", "CANBK.NS", "RECLTD.NS", "PFC.NS", "NHPC.NS",
 ]
 
 
