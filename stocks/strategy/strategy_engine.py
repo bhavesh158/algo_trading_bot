@@ -21,13 +21,13 @@ logger = logging.getLogger(__name__)
 # Strategy registry — maps config name to class import path
 _STRATEGY_REGISTRY: dict[str, tuple[str, str]] = {
     "mean_reversion": (
-        "strategy.strategies.mean_reversion", "MeanReversionStrategy"
+        "stocks.strategy.strategies.mean_reversion", "MeanReversionStrategy"
     ),
     "momentum_breakout": (
-        "strategy.strategies.momentum_breakout", "MomentumBreakoutStrategy"
+        "stocks.strategy.strategies.momentum_breakout", "MomentumBreakoutStrategy"
     ),
     "opening_range_breakout": (
-        "strategy.strategies.opening_range_breakout", "OpeningRangeBreakoutStrategy"
+        "stocks.strategy.strategies.opening_range_breakout", "OpeningRangeBreakoutStrategy"
     ),
 }
 

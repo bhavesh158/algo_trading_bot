@@ -1,0 +1,23 @@
+[Unit]
+Description=Stock Trading Bot (NSE Paper Trading)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dev04
+WorkingDirectory=/home/dev04/work/personal/trading_apps/algo_trading_bot
+EnvironmentFile=/home/dev04/work/personal/trading_apps/algo_trading_bot/.env
+ExecStart=/home/dev04/work/personal/trading_apps/algo_trading_bot/venv/bin/python -m stocks.main --mode paper
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=stocks-trader
+
+[Install]
+WantedBy=multi-user.target

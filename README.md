@@ -185,6 +185,41 @@ sudo systemctl stop crypto-trader
 sudo systemctl restart crypto-trader
 ```
 
+### Stock Trading (systemd)
+
+The stock trading bot runs during NSE market hours (09:15–15:30 IST). Outside these hours the service idles.
+
+**1. Install stock dependencies** (if not already in the shared venv):
+
+```bash
+pip install -r requirements.txt
+```
+
+**2. Install the service:**
+
+```bash
+sudo cp stocks-trader.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable stocks-trader
+sudo systemctl start stocks-trader
+```
+
+**3. Managing the service:**
+
+```bash
+# View logs
+journalctl -u stocks-trader -f
+
+# After code changes
+git pull && sudo systemctl restart stocks-trader
+
+# Check status
+sudo systemctl status stocks-trader
+
+# Stop
+sudo systemctl stop stocks-trader
+```
+
 ---
 
 ## Status API (Monitoring)
