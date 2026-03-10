@@ -34,6 +34,7 @@ market_data:
 # --- Trading Pair Selection ---
 selection:
   candidate_pairs:
+    # Large caps
     - BTC/USDT
     - ETH/USDT
     - BNB/USDT
@@ -43,17 +44,35 @@ selection:
     - DOGE/USDT
     - AVAX/USDT
     - DOT/USDT
-    - POL/USDT
     - LINK/USDT
+    - LTC/USDT
+    # Mid caps
+    - POL/USDT
     - UNI/USDT
     - ATOM/USDT
-    - LTC/USDT
     - FIL/USDT
     - NEAR/USDT
     - APT/USDT
     - ARB/USDT
     - OP/USDT
     - SUI/USDT
+    - TRX/USDT
+    - HBAR/USDT
+    - INJ/USDT
+    - RENDER/USDT
+    - FET/USDT
+    - IMX/USDT
+    - SEI/USDT
+    - WIF/USDT
+    - PEPE/USDT
+    - SHIB/USDT
+    - BONK/USDT
+    # Volatile / trending
+    - AAVE/USDT
+    - MKR/USDT
+    - RUNE/USDT
+    - TIA/USDT
+    - JUP/USDT
   min_24h_volume_usdt: 10000000  # Min $10M daily volume
   max_spread_pct: 0.15           # Max 0.15% bid-ask spread
   max_active_pairs: 10           # Max pairs to trade simultaneously
