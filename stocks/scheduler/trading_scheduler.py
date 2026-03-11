@@ -168,8 +168,9 @@ class TradingScheduler:
         system.stock_selector.build_watchlist()
         watchlist = system.stock_selector.watchlist
 
-        # Load intraday data for watchlist
-        system.market_data_engine.load_historical_data(watchlist)
+        # Load intraday data for watchlist + index symbols for regime detection
+        index_symbols = self.config.get("selection", {}).get("index_symbols", ["^NSEI"])
+        system.market_data_engine.load_historical_data(watchlist + index_symbols)
 
         # Detect initial market regime
         system.regime_detector.set_market_data(system.market_data_engine)
@@ -206,8 +207,10 @@ class TradingScheduler:
         if not watchlist:
             return
 
-        # Update market data
-        system.market_data_engine.update_data(watchlist)
+        # Update market data (include index symbols for regime detection)
+        index_symbols = self.config.get("selection", {}).get("index_symbols", ["^NSEI"])
+        all_symbols = list(set(watchlist + index_symbols))
+        system.market_data_engine.update_data(all_symbols)
 
         # Periodic heartbeat
         if self._cycle_count % self._heartbeat_interval == 0:

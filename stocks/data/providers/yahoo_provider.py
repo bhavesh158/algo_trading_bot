@@ -67,9 +67,11 @@ class YahooProvider(DataProvider):
 
         try:
             ticker = self._get_ticker(symbol)
+            # yfinance `end` is exclusive — add 1 day to include today's data
+            end_inclusive = end + timedelta(days=1)
             df = ticker.history(
                 start=start.strftime("%Y-%m-%d"),
-                end=end.strftime("%Y-%m-%d"),
+                end=end_inclusive.strftime("%Y-%m-%d"),
                 interval=interval,
             )
             if df.empty:

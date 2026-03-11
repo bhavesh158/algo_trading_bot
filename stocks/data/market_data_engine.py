@@ -47,6 +47,10 @@ class MarketDataEngine:
         )
         self._history_days = config.get("market_data", {}).get("history_days", 30)
 
+        # Round-robin index for throttled updates
+        self._update_cursor = 0
+        self._symbols_per_update = 5  # Max symbols to refresh per cycle
+
         logger.info(
             "MarketDataEngine initialized (provider=%s, timeframes=%s)",
             provider_name, [tf.value for tf in self._timeframes],
@@ -104,8 +108,23 @@ class MarketDataEngine:
                     )
 
     def update_data(self, symbols: list[str]) -> None:
-        """Fetch latest data for all symbols and publish events."""
-        for symbol in symbols:
+        """Fetch latest data for a batch of symbols (round-robin) and publish events.
+
+        Processes only a few symbols per cycle to avoid overwhelming the
+        Yahoo Finance API with 60+ requests every 5 seconds.
+        """
+        # Round-robin: pick the next batch of symbols
+        n = len(symbols)
+        if n == 0:
+            return
+        batch_size = min(self._symbols_per_update, n)
+        start_idx = self._update_cursor % n
+        batch = []
+        for i in range(batch_size):
+            batch.append(symbols[(start_idx + i) % n])
+        self._update_cursor = (start_idx + batch_size) % n
+
+        for symbol in batch:
             for tf in self._timeframes:
                 try:
                     df = self.provider.get_historical_data(
