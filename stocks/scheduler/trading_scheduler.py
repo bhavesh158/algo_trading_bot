@@ -11,8 +11,8 @@ The scheduler runs the main loop and delegates to components.
 from __future__ import annotations
 
 import logging
-import time
-from datetime import datetime, timedelta
+import time as _time
+from datetime import datetime, time, timedelta
 from typing import Any
 
 from stocks.core.enums import OrderSide, OrderType, TradingPhase
@@ -42,28 +42,46 @@ class TradingScheduler:
         self._running = False
         self._cycle_count = 0
         self._heartbeat_interval = 12  # Log status every 12 cycles (~60s at 5s interval)
+        self._last_trading_date = None  # Track date for daily resets
 
         logger.info("TradingScheduler initialized (open=%s, close=%s)",
                      self._market_open.strftime("%H:%M"), self._market_close.strftime("%H:%M"))
 
     @staticmethod
-    def _parse_time(time_str: str) -> datetime:
-        """Parse HH:MM string into a datetime for today."""
-        t = datetime.strptime(time_str, "%H:%M").time()
-        return datetime.combine(datetime.now().date(), t)
+    def _parse_time(time_str: str) -> time:
+        """Parse HH:MM string into a time object."""
+        return datetime.strptime(time_str, "%H:%M").time()
 
     def _get_current_phase(self) -> TradingPhase:
         """Determine the current trading phase based on clock time."""
         now = datetime.now()
-        if now < self._pre_market_start:
+        today = now.date()
+
+        # Reset daily flags when the date rolls over
+        if self._last_trading_date != today:
+            if self._last_trading_date is not None:
+                logger.info("New trading day detected (%s -> %s), resetting daily state",
+                            self._last_trading_date, today)
+            self._last_trading_date = today
+            self._pre_market_done = False
+            self._pre_close_done = False
+            self._cycle_count = 0
+
+        # Compare using today's date so boundaries are always current
+        pre_market_start = datetime.combine(today, self._pre_market_start)
+        market_open = datetime.combine(today, self._market_open)
+        pre_close_start = datetime.combine(today, self._pre_close_start)
+        market_close = datetime.combine(today, self._market_close)
+
+        if now < pre_market_start:
             return TradingPhase.MARKET_CLOSED
-        elif now < self._market_open:
+        elif now < market_open:
             return TradingPhase.PRE_MARKET
-        elif now == self._market_open or (self._market_open <= now < self._market_open + timedelta(minutes=5)):
+        elif market_open <= now < market_open + timedelta(minutes=5):
             return TradingPhase.MARKET_OPEN
-        elif now < self._pre_close_start:
+        elif now < pre_close_start:
             return TradingPhase.MARKET_HOURS
-        elif now < self._market_close:
+        elif now < market_close:
             return TradingPhase.PRE_CLOSE
         else:
             return TradingPhase.MARKET_CLOSED
@@ -91,14 +109,14 @@ class TradingScheduler:
                 self._execute_phase()
 
                 # Sleep until next cycle
-                time.sleep(self._update_interval)
+                _time.sleep(self._update_interval)
 
             except KeyboardInterrupt:
                 logger.info("Scheduler interrupted")
                 self._running = False
             except Exception:
                 logger.exception("Error in scheduler main loop")
-                time.sleep(self._update_interval)
+                _time.sleep(self._update_interval)
 
     def _on_phase_transition(self, new_phase: TradingPhase) -> None:
         """Handle transition from one phase to another."""
