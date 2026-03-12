@@ -45,7 +45,7 @@ selection:
 
 # --- Scheduler / Anti-Churn ---
 scheduler:
-  max_entries_per_cycle: 1           # Max new positions per cycle (prevents correlated batch entries)
+  max_entries_per_cycle: 2           # Max new positions per cycle (prevents correlated batch entries)
   min_expected_profit_pct: 0.5       # Reject signals with <0.5% expected profit (must cover fees)
   min_hold_minutes: 10               # Don't exit (except stop-loss) within 10 min of open
   signal_cooldown_seconds: 300       # 5-min cooldown per symbol after entry/exit
@@ -99,10 +99,10 @@ regime_detection:
 # --- Risk Management ---
 risk:
   max_risk_per_trade_pct: 1.0       # Max 1% of capital per trade
-  max_open_positions: 3             # Fewer, larger positions (was 5)
+  max_open_positions: 4             # Balanced: 4 positions (was 3)
   max_daily_loss_pct: 3.0           # Stop trading if daily loss exceeds 3%
-  max_total_exposure_pct: 60.0      # Max 60% of capital deployed (3 × 20%)
-  max_single_stock_exposure_pct: 25.0  # Larger positions allowed
+  max_total_exposure_pct: 70.0      # Max 70% of capital deployed (4 × ~18%)
+  max_single_stock_exposure_pct: 22.0  # Larger positions allowed
   min_risk_reward_ratio: 1.5
 
 # --- Position Sizing ---
