@@ -44,6 +44,12 @@ class TradingScheduler:
         self._heartbeat_interval = 12  # Log status every 12 cycles (~60s at 5s interval)
         self._last_trading_date = None  # Track date for daily resets
 
+        # Anti-churn / scheduler guards
+        sched_config = config.get("scheduler", {})
+        self._max_entries_per_cycle = sched_config.get("max_entries_per_cycle", 1)
+        self._min_expected_profit_pct = sched_config.get("min_expected_profit_pct", 0.5)
+        self._max_open_positions = config.get("risk", {}).get("max_open_positions", 3)
+
         logger.info("TradingScheduler initialized (open=%s, close=%s)",
                      self._market_open.strftime("%H:%M"), self._market_close.strftime("%H:%M"))
 
@@ -241,8 +247,35 @@ class TradingScheduler:
         # Run strategies to generate signals
         signals = system.strategy_engine.run_strategies(watchlist)
 
-        # Execute signals
+        # Execute signals (with per-entry position limit + throttle)
+        entries_this_cycle = 0
         for signal in signals:
+            # Hard limit: re-check position count before EACH entry
+            open_count = len(system.portfolio_manager.get_open_positions())
+            if open_count >= self._max_open_positions:
+                break
+
+            # Throttle: max entries per cycle
+            if entries_this_cycle >= self._max_entries_per_cycle:
+                break
+
+            # Profitability filter: reject signals where target doesn't cover fees
+            if signal.target_price and signal.entry_price > 0:
+                if signal.side == OrderSide.BUY:
+                    expected_pct = (signal.target_price - signal.entry_price) / signal.entry_price * 100
+                else:
+                    expected_pct = (signal.entry_price - signal.target_price) / signal.entry_price * 100
+                if expected_pct < self._min_expected_profit_pct:
+                    logger.debug(
+                        "Signal filtered (low profit): %s %s expected=%.2f%% < %.2f%%",
+                        signal.strategy_id, signal.symbol, expected_pct, self._min_expected_profit_pct,
+                    )
+                    continue
+
+            # Skip if already have a position in this symbol
+            if signal.symbol in system.portfolio_manager.get_open_position_symbols():
+                continue
+
             quantity = system.position_sizer.calculate_quantity(signal)
             if quantity <= 0:
                 continue
@@ -265,6 +298,7 @@ class TradingScheduler:
                 entry_comm = system.order_executor.commission
                 pos = system.portfolio_manager.open_position(filled_order, entry_commission=entry_comm)
                 system.trade_journal.log_open(filled_order, pos)
+                entries_this_cycle += 1
 
         # Check exit conditions for open positions
         open_positions = system.portfolio_manager.get_open_positions()

@@ -43,13 +43,20 @@ selection:
     - "^NSEI"   # Nifty 50
     - "^NSEBANK"  # Bank Nifty
 
+# --- Scheduler / Anti-Churn ---
+scheduler:
+  max_entries_per_cycle: 1           # Max new positions per cycle (prevents correlated batch entries)
+  min_expected_profit_pct: 0.5       # Reject signals with <0.5% expected profit (must cover fees)
+  min_hold_minutes: 10               # Don't exit (except stop-loss) within 10 min of open
+  signal_cooldown_seconds: 300       # 5-min cooldown per symbol after entry/exit
+
 # --- Strategy Engine ---
 strategies:
   enabled:
     - mean_reversion
     - momentum_breakout
     - opening_range_breakout
-  default_confidence_threshold: 0.6
+  default_confidence_threshold: 0.65
 
 # --- Individual Strategy Configs ---
 mean_reversion:
@@ -57,19 +64,22 @@ mean_reversion:
   entry_zscore: -2.0
   exit_zscore: 0.0
   stop_zscore: -3.0
+  min_exit_profit_pct: 0.5           # Don't exit below 0.5% gross profit (covers fees)
 
 momentum_breakout:
   lookback_period: 20
   volume_multiplier: 1.5
   breakout_threshold_pct: 1.0
   atr_multiplier_stop: 2.0
-  atr_multiplier_target: 3.0
+  atr_multiplier_target: 4.0         # Wider targets — let breakouts run (was 3.0)
 
 opening_range_breakout:
   opening_range_minutes: 15
-  breakout_buffer_pct: 0.1
+  breakout_buffer_pct: 0.2           # Wider buffer — fewer false breakouts (was 0.1)
   atr_multiplier_stop: 1.5
-  atr_multiplier_target: 2.5
+  atr_multiplier_target: 3.0         # Wider target (was 2.5)
+  max_window_minutes: 60             # Only fire within 60 min of market open
+  volume_confirm: true               # Require above-average volume on breakout candle
 
 # --- AI Analysis ---
 ai_analysis:
@@ -89,10 +99,10 @@ regime_detection:
 # --- Risk Management ---
 risk:
   max_risk_per_trade_pct: 1.0       # Max 1% of capital per trade
-  max_open_positions: 5
+  max_open_positions: 3             # Fewer, larger positions (was 5)
   max_daily_loss_pct: 3.0           # Stop trading if daily loss exceeds 3%
-  max_total_exposure_pct: 50.0      # Max 50% of capital deployed
-  max_single_stock_exposure_pct: 15.0
+  max_total_exposure_pct: 60.0      # Max 60% of capital deployed (3 × 20%)
+  max_single_stock_exposure_pct: 25.0  # Larger positions allowed
   min_risk_reward_ratio: 1.5
 
 # --- Position Sizing ---
@@ -100,7 +110,7 @@ position_sizing:
   method: volatility_adjusted  # fixed | volatility_adjusted | kelly
   fixed_quantity: 10
   volatility_lookback: 14
-  max_position_pct: 10.0  # Max position size as % of capital
+  max_position_pct: 20.0  # Larger positions = lower fee impact (was 10%)
 
 # --- Drawdown Protection ---
 drawdown:
@@ -132,7 +142,7 @@ broker:
 # --- Paper Trading ---
 paper_trading:
   slippage_pct: 0.05
-  commission_per_trade: 20.0
+  commission_per_trade: 25.0          # Realistic: ₹20 brokerage + ₹3.60 GST + ~₹1.75 STT (was 20)
   fill_delay_seconds: 1
 
 # --- Reporting ---

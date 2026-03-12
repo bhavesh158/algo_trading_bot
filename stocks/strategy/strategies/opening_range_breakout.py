@@ -7,7 +7,7 @@ then trades breakouts above/below that range.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from typing import Any, Optional
 
 import numpy as np
@@ -28,13 +28,20 @@ class OpeningRangeBreakoutStrategy(BaseStrategy):
 
         strat_config = config.get("opening_range_breakout", {})
         self._or_minutes = strat_config.get("opening_range_minutes", 15)
-        self._buffer_pct = strat_config.get("breakout_buffer_pct", 0.1)
+        self._buffer_pct = strat_config.get("breakout_buffer_pct", 0.2)
         self._atr_stop = strat_config.get("atr_multiplier_stop", 1.5)
-        self._atr_target = strat_config.get("atr_multiplier_target", 2.5)
+        self._atr_target = strat_config.get("atr_multiplier_target", 3.0)
+        self._max_window_minutes = strat_config.get("max_window_minutes", 60)
+        self._volume_confirm = strat_config.get("volume_confirm", True)
         self.primary_timeframe = Timeframe.M1
+
+        # Market open time (IST)
+        sched = config.get("schedule", {})
+        self._market_open_str = sched.get("market_open", "09:15")
 
         # State per symbol per day
         self._opening_ranges: dict[str, dict] = {}
+        self._signals_fired: dict[str, bool] = {}  # One signal per symbol per day
         self._last_date: Optional[str] = None
 
     def _compute_opening_range(self, symbol: str) -> Optional[dict]:
@@ -63,7 +70,20 @@ class OpeningRangeBreakoutStrategy(BaseStrategy):
         today_str = datetime.now().strftime("%Y-%m-%d")
         if self._last_date != today_str:
             self._opening_ranges.clear()
+            self._signals_fired.clear()
             self._last_date = today_str
+
+        # Only one ORB signal per symbol per day
+        if self._signals_fired.get(symbol, False):
+            return None
+
+        # Time window: only fire within max_window_minutes of market open
+        now = datetime.now()
+        market_open_time = datetime.strptime(self._market_open_str, "%H:%M").time()
+        market_open_dt = datetime.combine(now.date(), market_open_time)
+        cutoff = market_open_dt + timedelta(minutes=self._max_window_minutes)
+        if now > cutoff:
+            return None
 
         # Compute opening range if not yet available
         if symbol not in self._opening_ranges:
@@ -81,6 +101,13 @@ class OpeningRangeBreakoutStrategy(BaseStrategy):
         if df is None or df.empty:
             return None
         current_price = float(df["close"].iloc[-1])
+
+        # Volume confirmation: current candle volume > 10-period average
+        if self._volume_confirm and "volume" in df.columns:
+            current_vol = float(df["volume"].iloc[-1])
+            avg_vol = float(df["volume"].tail(10).mean())
+            if avg_vol > 0 and current_vol < avg_vol:
+                return None
 
         # ATR for stop/target
         atr = self.market_data.get_indicator(symbol, Timeframe.M5, "atr_14")
@@ -107,6 +134,7 @@ class OpeningRangeBreakoutStrategy(BaseStrategy):
                 "[%s] ORB bullish breakout: %s price=%.2f > OR_high=%.2f",
                 self.strategy_id, symbol, current_price, or_high,
             )
+            self._signals_fired[symbol] = True
             return signal
 
         # Bearish breakout (sell signal)
@@ -126,6 +154,7 @@ class OpeningRangeBreakoutStrategy(BaseStrategy):
                 "[%s] ORB bearish breakout: %s price=%.2f < OR_low=%.2f",
                 self.strategy_id, symbol, current_price, or_low,
             )
+            self._signals_fired[symbol] = True
             return signal
 
         return None
