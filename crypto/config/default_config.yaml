@@ -85,6 +85,10 @@ strategies:
     - mean_reversion
     - breakout_momentum
   default_confidence_threshold: 0.6
+  # Signal burst limiter — prevents correlated batch entries
+  signal_burst_window_seconds: 600      # 10 min rolling window
+  max_signals_per_window: 3             # Max signals in the window
+  per_symbol_cooldown_seconds: 900      # 15 min between signals for same symbol
 
 # --- Individual Strategy Configs ---
 trend_following:
@@ -94,6 +98,9 @@ trend_following:
   atr_multiplier_stop: 2.5         # Wider stops — fewer premature stop-outs (was 2.0)
   atr_multiplier_target: 4.0       # Let trends run (was 3.0)
   require_htf_alignment: true      # 1h EMA trend must agree with 15m signal
+  volume_confirm_mult: 1.2         # Crossover candle must have 1.2x avg volume
+  trailing_stop_atr_multiplier: 2.0
+  max_hold_minutes: 360            # 6 hours max
 
 mean_reversion:
   bb_period: 20
@@ -105,6 +112,11 @@ mean_reversion:
   atr_multiplier_target: 3.0       # Wider targets — let reversion play out (was 2.0)
   volume_confirm_mult: 1.2         # Require 1.2x avg volume for entry
   min_exit_profit_pct: 1.0         # Don't strategy-exit below 1.0% profit (covers fees+tax+risk)
+  trend_filter_enabled: true       # Skip BUY in downtrend, SELL in uptrend (EMA9 vs EMA21)
+  rsi_capitulation_floor: 15       # Skip entry if RSI < 15 (free-fall)
+  rsi_capitulation_ceiling: 85     # Skip entry if RSI > 85 (vertical pump)
+  trailing_stop_atr_multiplier: 1.5
+  max_hold_minutes: 120            # 2 hours max
 
 breakout_momentum:
   lookback_period: 20
@@ -112,6 +124,10 @@ breakout_momentum:
   breakout_buffer_pct: 0.1         # Tighter breakout zone (was 0.2)
   atr_multiplier_stop: 2.0
   atr_multiplier_target: 3.0
+  volume_decay_threshold: 0.5      # Exit if volume < 50% avg for N candles
+  volume_decay_candles: 3          # Number of consecutive low-volume candles to trigger exit
+  trailing_stop_atr_multiplier: 1.5
+  max_hold_minutes: 480            # 8 hours max
 
 # --- AI Analysis ---
 ai_analysis:
@@ -119,6 +135,18 @@ ai_analysis:
   min_confidence_boost: 0.05
   max_confidence_boost: 0.25
   lookback_candles: 50
+  # LLM integration (opt-in: requires LLM_API_KEY env var)
+  llm_enabled: false
+  llm_provider: gemini              # gemini | openai
+  llm_cache_minutes: 15             # Cache LLM results per symbol
+  # News sentiment (opt-in: CryptoPanic API, requires NEWS_API_KEY env var)
+  news_enabled: false
+  news_refresh_minutes: 30          # Re-fetch headlines every 30 min
+  # Factor weights (must sum to 1.0 when all active)
+  factor_weights:
+    technical: 0.6
+    llm: 0.25
+    news: 0.15
 
 # --- Market Regime ---
 regime_detection:

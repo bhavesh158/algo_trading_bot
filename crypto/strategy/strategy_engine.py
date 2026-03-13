@@ -7,13 +7,14 @@ and aggregates/filters trading signals.
 from __future__ import annotations
 
 import logging
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from crypto.core.enums import MarketRegime, OrderSide
 from crypto.core.event_bus import EventBus
 from crypto.core.events import SignalEvent
-from crypto.core.models import Signal
+from crypto.core.models import Position, Signal
 from crypto.data.market_data_engine import MarketDataEngine
 from crypto.strategy.base_strategy import BaseStrategy
 
@@ -54,7 +55,17 @@ class StrategyEngine:
         self._last_signal_log: dict[tuple[str, str, str], datetime] = {}
         self._signal_log_interval = 300  # seconds between repeated signal logs
 
-        logger.info("StrategyEngine initialized (threshold=%.2f)", self._confidence_threshold)
+        # --- Signal burst limiter ---
+        burst_cfg = config.get("strategies", {})
+        self._burst_window_seconds = burst_cfg.get("signal_burst_window_seconds", 600)  # 10 min
+        self._max_signals_per_window = burst_cfg.get("max_signals_per_window", 3)
+        self._per_symbol_cooldown_seconds = burst_cfg.get("per_symbol_cooldown_seconds", 900)  # 15 min
+        self._recent_signals: deque[tuple[datetime, str]] = deque()  # (timestamp, symbol)
+        self._last_signal_per_symbol: dict[str, datetime] = {}  # symbol -> last signal time
+
+        logger.info("StrategyEngine initialized (threshold=%.2f, burst_max=%d/%ds)",
+                    self._confidence_threshold, self._max_signals_per_window,
+                    self._burst_window_seconds)
 
     def load_strategies(self, market_data: MarketDataEngine) -> None:
         """Instantiate all configured strategies."""
@@ -92,6 +103,12 @@ class StrategyEngine:
         """
         skip = excluded_symbols or set()
         signals: list[Signal] = []
+        now = datetime.now(timezone.utc)
+
+        # Prune stale burst tracking entries
+        cutoff = now.timestamp() - self._burst_window_seconds
+        while self._recent_signals and self._recent_signals[0][0].timestamp() < cutoff:
+            self._recent_signals.popleft()
 
         for name, strategy in self._strategies.items():
             if not strategy.enabled:
@@ -104,6 +121,27 @@ class StrategyEngine:
                     signal = strategy.analyze(symbol)
                     if signal is None:
                         continue
+
+                    # --- Burst limiter: global window ---
+                    if len(self._recent_signals) >= self._max_signals_per_window:
+                        logger.debug(
+                            "BURST BLOCKED: %s %s — %d signals in last %ds",
+                            signal.side.name, symbol,
+                            len(self._recent_signals), self._burst_window_seconds,
+                        )
+                        continue
+
+                    # --- Burst limiter: per-symbol cooldown ---
+                    last_sym_signal = self._last_signal_per_symbol.get(symbol)
+                    if last_sym_signal:
+                        elapsed = (now - last_sym_signal).total_seconds()
+                        if elapsed < self._per_symbol_cooldown_seconds:
+                            logger.debug(
+                                "COOLDOWN BLOCKED: %s %s — %.0fs since last signal (need %ds)",
+                                signal.side.name, symbol, elapsed,
+                                self._per_symbol_cooldown_seconds,
+                            )
+                            continue
 
                     # AI confidence adjustment
                     if self.ai_analysis:
@@ -130,9 +168,12 @@ class StrategyEngine:
                     signals.append(signal)
                     self.event_bus.publish(SignalEvent(signal=signal))
 
+                    # Record signal for burst tracking
+                    self._recent_signals.append((now, symbol))
+                    self._last_signal_per_symbol[symbol] = now
+
                     # Suppress repeated signal logs for the same symbol/side/strategy
                     sig_key = (symbol, signal.side.name, name)
-                    now = datetime.now(timezone.utc)
                     last_logged = self._last_signal_log.get(sig_key)
                     if not last_logged or (now - last_logged).total_seconds() >= self._signal_log_interval:
                         logger.info(
@@ -148,7 +189,12 @@ class StrategyEngine:
         return signals
 
     def check_exits(self, symbols: list[str], positions_info: dict) -> list[Signal]:
-        """Check exit conditions for open positions."""
+        """Check exit conditions for open positions.
+
+        Args:
+            positions_info: dict of symbol -> {strategy_id, entry_price, current_price, side, position}
+                           'position' is an optional Position object for trailing/time exits.
+        """
         exit_signals: list[Signal] = []
 
         for symbol in symbols:
@@ -165,6 +211,7 @@ class StrategyEngine:
                 exit_sig = strategy.get_exit_signal(
                     symbol, info["entry_price"], info["current_price"],
                     side=info.get("side", OrderSide.BUY),
+                    position=info.get("position"),
                 )
                 if exit_sig:
                     exit_signals.append(exit_sig)

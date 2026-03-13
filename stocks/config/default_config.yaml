@@ -122,6 +122,18 @@ ai_analysis:
   min_confidence_boost: 0.1
   max_confidence_boost: 0.3
   lookback_candles: 50
+  # LLM integration (opt-in: requires LLM_API_KEY env var)
+  llm_enabled: false
+  llm_provider: gemini              # gemini | openai
+  llm_cache_minutes: 15             # Cache LLM results per symbol
+  # News sentiment (opt-in)
+  news_enabled: false
+  news_refresh_minutes: 30          # Re-fetch headlines every 30 min
+  # Factor weights (must sum to 1.0 when all active)
+  factor_weights:
+    technical: 0.6
+    llm: 0.25
+    news: 0.15
 
 # --- Market Regime ---
 regime_detection:

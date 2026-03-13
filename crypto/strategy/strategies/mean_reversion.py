@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 class MeanReversionStrategy(BaseStrategy):
-    """Bollinger Band reversion with RSI divergence and volume confirmation."""
+    """Bollinger Band reversion with RSI divergence, EMA trend filter, and volume confirmation."""
 
     def __init__(self, config: dict[str, Any], market_data: MarketDataEngine) -> None:
         super().__init__("mean_reversion", config, market_data)
@@ -31,7 +31,14 @@ class MeanReversionStrategy(BaseStrategy):
         self._atr_target_mult = sc.get("atr_multiplier_target", 3.0)
         self._vol_confirm_mult = sc.get("volume_confirm_mult", 1.2)
         self._min_exit_profit_pct = sc.get("min_exit_profit_pct", 1.0) / 100  # 1.0%
+        self._trend_filter_enabled = sc.get("trend_filter_enabled", True)
+        self._rsi_capitulation_floor = sc.get("rsi_capitulation_floor", 15)
+        self._rsi_capitulation_ceiling = sc.get("rsi_capitulation_ceiling", 85)
         self.primary_timeframe = "15m"
+
+        # Trailing stop + max hold from base
+        self._trailing_stop_atr = sc.get("trailing_stop_atr_multiplier", 1.5)
+        self._max_hold_minutes = sc.get("max_hold_minutes", 120)
 
     def analyze(self, symbol: str) -> Optional[Signal]:
         df = self.market_data.get_dataframe(symbol, self.primary_timeframe)
@@ -52,6 +59,22 @@ class MeanReversionStrategy(BaseStrategy):
 
         if pd.isna(curr_bb_lower) or pd.isna(curr_rsi) or pd.isna(curr_atr) or curr_atr == 0:
             return None
+
+        # RSI capitulation filter: skip free-falls and vertical pumps
+        if curr_rsi < self._rsi_capitulation_floor or curr_rsi > self._rsi_capitulation_ceiling:
+            logger.debug(
+                "[mean_reversion] %s SKIP: RSI=%.1f in capitulation zone (<%d or >%d)",
+                symbol, curr_rsi, self._rsi_capitulation_floor, self._rsi_capitulation_ceiling,
+            )
+            return None
+
+        # EMA trend filter: don't buy dips in downtrends or sell rips in uptrends
+        ema_trend_bullish = None
+        if self._trend_filter_enabled:
+            ema_9 = df.get("ema_9", pd.Series(dtype=float))
+            ema_21 = df.get("ema_21", pd.Series(dtype=float))
+            if not ema_9.empty and not ema_21.empty and not pd.isna(ema_9.iloc[-1]) and not pd.isna(ema_21.iloc[-1]):
+                ema_trend_bullish = bool(ema_9.iloc[-1] > ema_21.iloc[-1])
 
         bb_upper = df.get("bb_upper", pd.Series(dtype=float))
         curr_bb_upper = bb_upper.iloc[-1] if not bb_upper.empty else 0
@@ -78,6 +101,14 @@ class MeanReversionStrategy(BaseStrategy):
 
         # BUY: price in lower 25% of BB + RSI deeply oversold
         if close <= lower_zone and curr_rsi < self._rsi_oversold:
+            # Trend filter: don't buy dips in a downtrend
+            if self._trend_filter_enabled and ema_trend_bullish is False:
+                logger.debug(
+                    "[mean_reversion] %s SKIP BUY: EMA downtrend (RSI=%.1f)",
+                    symbol, curr_rsi,
+                )
+                return None
+
             stop = close - self._atr_stop_mult * curr_atr
             target = bb_mid + self._atr_target_mult * curr_atr * 0.5
 
@@ -93,11 +124,19 @@ class MeanReversionStrategy(BaseStrategy):
                 entry_price=close,
                 stop_loss=stop,
                 target_price=target,
-                metadata={"rsi": curr_rsi, "bb_lower": curr_bb_lower},
+                metadata={"rsi": curr_rsi, "bb_lower": curr_bb_lower, "ema_trend": "bullish" if ema_trend_bullish else "bearish"},
             )
 
         # SELL: price in upper 25% of BB + RSI deeply overbought
         if close >= upper_zone and curr_rsi > self._rsi_overbought:
+            # Trend filter: don't sell rips in an uptrend
+            if self._trend_filter_enabled and ema_trend_bullish is True:
+                logger.debug(
+                    "[mean_reversion] %s SKIP SELL: EMA uptrend (RSI=%.1f)",
+                    symbol, curr_rsi,
+                )
+                return None
+
             stop = close + self._atr_stop_mult * curr_atr
             target = bb_mid - self._atr_target_mult * curr_atr * 0.5
 
@@ -112,7 +151,7 @@ class MeanReversionStrategy(BaseStrategy):
                 entry_price=close,
                 stop_loss=stop,
                 target_price=target,
-                metadata={"rsi": curr_rsi, "bb_upper": curr_bb_upper},
+                metadata={"rsi": curr_rsi, "bb_upper": curr_bb_upper, "ema_trend": "bullish" if ema_trend_bullish else "bearish"},
             )
 
         return None

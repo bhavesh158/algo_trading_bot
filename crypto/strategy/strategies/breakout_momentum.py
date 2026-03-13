@@ -30,7 +30,13 @@ class BreakoutMomentumStrategy(BaseStrategy):
         self._buffer_pct = sc.get("breakout_buffer_pct", 0.2) / 100
         self._atr_stop_mult = sc.get("atr_multiplier_stop", 2.0)
         self._atr_target_mult = sc.get("atr_multiplier_target", 3.0)
+        self._vol_decay_threshold = sc.get("volume_decay_threshold", 0.5)
+        self._vol_decay_candles = sc.get("volume_decay_candles", 3)
         self.primary_timeframe = "1h"
+
+        # Trailing stop + max hold from base
+        self._trailing_stop_atr = sc.get("trailing_stop_atr_multiplier", 1.5)
+        self._max_hold_minutes = sc.get("max_hold_minutes", 480)
 
     def analyze(self, symbol: str) -> Optional[Signal]:
         df = self.market_data.get_dataframe(symbol, self.primary_timeframe)
@@ -96,6 +102,24 @@ class BreakoutMomentumStrategy(BaseStrategy):
         atr = df.get("atr", pd.Series(dtype=float))
         if atr.empty or pd.isna(atr.iloc[-1]):
             return False
+
+        # Volume decay exit: if volume drops significantly for N+ candles, momentum is dead
+        vol_sma = df.get("volume_sma", pd.Series(dtype=float))
+        if not vol_sma.empty and len(df) >= self._vol_decay_candles:
+            recent_vols = df["volume"].iloc[-self._vol_decay_candles:]
+            avg_vol = vol_sma.iloc[-1]
+            if avg_vol > 0 and not pd.isna(avg_vol):
+                all_low = all(
+                    v < self._vol_decay_threshold * avg_vol
+                    for v in recent_vols
+                    if not pd.isna(v)
+                )
+                if all_low:
+                    logger.debug(
+                        "[breakout] %s volume decay exit: last %d candles below %.0f%% avg",
+                        symbol, self._vol_decay_candles, self._vol_decay_threshold * 100,
+                    )
+                    return True
 
         # Trailing stop: exit if price moves against position by 2x ATR
         if side == OrderSide.BUY:

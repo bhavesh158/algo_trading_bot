@@ -191,11 +191,12 @@ class ContinuousScheduler:
             tfs.append("1h")
         system.market_data_engine.update_data(pairs, timeframes=tfs)
 
-        # Update position prices
+        # Update position prices + track extremes for trailing stops
         for symbol, pos in system.portfolio_manager.get_open_positions().items():
             price = system.market_data_engine.get_current_price(symbol)
             if price > 0:
                 system.portfolio_manager.update_position_price(symbol, price)
+                pos.update_extremes(price)
 
         # Check drawdown
         dd_level = system.drawdown_monitor.check_drawdown()
@@ -237,6 +238,19 @@ class ContinuousScheduler:
                         expected_profit_pct * 100, self._min_expected_profit_pct * 100,
                     )
                     continue
+
+                # Commission-aware filter: expected gross must exceed 2x round-trip commission
+                est_notional = signal.entry_price * system.position_sizer.calculate_quantity(signal)
+                if est_notional > 0:
+                    round_trip_comm = 2 * system.order_executor.get_commission(est_notional)
+                    expected_gross = expected_profit_pct * est_notional
+                    if expected_gross < 2 * round_trip_comm:
+                        logger.debug(
+                            "BLOCKED commission drag: %s %s gross=%.4f < 2×comm=%.4f",
+                            signal.side.name, signal.symbol,
+                            expected_gross, round_trip_comm,
+                        )
+                        continue
 
             # Enforce minimum stop distance to prevent micro-stops in low-vol
             stop_dist = abs(signal.entry_price - signal.stop_loss)
@@ -325,7 +339,7 @@ class ContinuousScheduler:
                     self._close_position(system, symbol, current_price, pos, "target")
                     continue
 
-            # Strategy exit
+            # Strategy exit (now includes trailing stop + time-based via base strategy)
             exit_signals = system.strategy_engine.check_exits(
                 [symbol],
                 {symbol: {
@@ -333,10 +347,12 @@ class ContinuousScheduler:
                     "entry_price": pos.entry_price,
                     "current_price": current_price,
                     "side": pos.side,
+                    "position": pos,
                 }},
             )
-            for _ in exit_signals:
-                self._close_position(system, symbol, current_price, pos, "strategy_exit")
+            for exit_sig in exit_signals:
+                exit_reason = exit_sig.metadata.get("exit_reason", "strategy_exit") if exit_sig.metadata else "strategy_exit"
+                self._close_position(system, symbol, current_price, pos, exit_reason)
 
         # Keep pair selector in sync with open positions
         system.pair_selector.set_protected_pairs(

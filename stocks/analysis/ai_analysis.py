@@ -1,7 +1,9 @@
 """AI-Assisted Analysis Layer.
 
-Enhances trading signals using statistical analysis of price patterns,
-volatility conditions, momentum, and historical strategy performance.
+Multi-factor signal confidence adjustment using:
+- Technical indicators (trend, volatility, RSI, volume, VWAP, S/R, candle patterns)
+- LLM-powered market analysis (optional)
+- News sentiment (optional)
 
 Per PRD §8: AI should assist decision making, not be the sole decision maker.
 """
@@ -22,12 +24,14 @@ logger = logging.getLogger(__name__)
 
 
 class AIAnalysis:
-    """Statistical signal filter and confidence adjuster."""
+    """Multi-factor signal filter and confidence adjuster with LLM + news support."""
 
     def __init__(self, config: dict[str, Any], event_bus: EventBus) -> None:
         self.config = config
         self.event_bus = event_bus
         self._market_data: Optional[MarketDataEngine] = None
+        self._llm_client: Any = None
+        self._news_sentiment: Any = None
 
         ai_config = config.get("ai_analysis", {})
         self._enabled = ai_config.get("enabled", True)
@@ -35,64 +39,94 @@ class AIAnalysis:
         self._max_boost = ai_config.get("max_confidence_boost", 0.3)
         self._lookback = ai_config.get("lookback_candles", 50)
 
-        logger.info("AIAnalysis initialized (enabled=%s)", self._enabled)
+        # Factor weights
+        weights = ai_config.get("factor_weights", {})
+        self._weight_technical = weights.get("technical", 0.6)
+        self._weight_llm = weights.get("llm", 0.25)
+        self._weight_news = weights.get("news", 0.15)
+
+        # Initialize LLM + news
+        self._init_ai_modules(config)
+
+        logger.info("AIAnalysis initialized (enabled=%s, llm=%s, news=%s)",
+                    self._enabled,
+                    self._llm_client.is_enabled if self._llm_client else False,
+                    self._news_sentiment.is_enabled if self._news_sentiment else False)
+
+    def _init_ai_modules(self, config: dict[str, Any]) -> None:
+        """Initialize LLM client and news sentiment (graceful if imports fail)."""
+        try:
+            from common.llm_client import LLMClient
+            self._llm_client = LLMClient(config)
+        except Exception:
+            logger.debug("LLMClient not available — LLM analysis disabled")
+            self._llm_client = None
+
+        try:
+            from common.news_sentiment import NewsSentiment
+            self._news_sentiment = NewsSentiment(config, llm_client=self._llm_client)
+        except Exception:
+            logger.debug("NewsSentiment not available — news analysis disabled")
+            self._news_sentiment = None
 
     def set_market_data(self, market_data: MarketDataEngine) -> None:
         self._market_data = market_data
 
     def evaluate_signal(self, signal: Signal) -> Signal:
-        """Evaluate and adjust a signal's confidence based on multiple factors.
+        """Evaluate and adjust a signal's confidence using weighted multi-factor analysis.
 
         Returns the signal with potentially modified confidence and strength.
         """
         if not self._enabled or self._market_data is None:
             return signal
 
-        adjustments: list[float] = []
+        # --- Technical factors ---
+        tech_adjustments: list[float] = []
+        tech_adjustments.append(self._check_trend_alignment(signal))
+        tech_adjustments.append(self._check_volatility_regime(signal))
+        tech_adjustments.append(self._check_rsi_confirmation(signal))
+        tech_adjustments.append(self._check_volume_confirmation(signal))
+        tech_adjustments.append(self._check_vwap_position(signal))
+        tech_adjustments.append(self._check_support_resistance(signal))
+        tech_adjustments.append(self._check_candle_patterns(signal))
 
-        # Factor 1: Trend alignment
-        trend_adj = self._check_trend_alignment(signal)
-        adjustments.append(trend_adj)
+        tech_score = sum(tech_adjustments) / len(tech_adjustments) if tech_adjustments else 0.0
 
-        # Factor 2: Volatility regime
-        vol_adj = self._check_volatility_regime(signal)
-        adjustments.append(vol_adj)
+        # --- LLM factor ---
+        llm_score = 0.0
+        if self._llm_client and self._llm_client.is_enabled:
+            llm_score = self._get_llm_adjustment(signal)
 
-        # Factor 3: RSI confirmation
-        rsi_adj = self._check_rsi_confirmation(signal)
-        adjustments.append(rsi_adj)
+        # --- News factor ---
+        news_score = 0.0
+        if self._news_sentiment and self._news_sentiment.is_enabled:
+            news_score = self._get_news_adjustment(signal)
 
-        # Factor 4: Volume confirmation
-        vol_confirm = self._check_volume_confirmation(signal)
-        adjustments.append(vol_confirm)
+        # Weighted combination (redistribute disabled weights to technical)
+        llm_active = self._llm_client and self._llm_client.is_enabled
+        news_active = self._news_sentiment and self._news_sentiment.is_enabled
 
-        # Factor 5: VWAP position
-        vwap_adj = self._check_vwap_position(signal)
-        adjustments.append(vwap_adj)
-
-        # Factor 6: Support/resistance proximity
-        sr_adj = self._check_support_resistance(signal)
-        adjustments.append(sr_adj)
-
-        # Factor 7: Candle pattern recognition
-        pattern_adj = self._check_candle_patterns(signal)
-        adjustments.append(pattern_adj)
-
-        # Calculate total adjustment (average of factors, clamped)
-        if adjustments:
-            avg_adj = sum(adjustments) / len(adjustments)
-            adjustment = max(-self._max_boost, min(self._max_boost, avg_adj))
+        if llm_active and news_active:
+            adjustment = (self._weight_technical * tech_score +
+                         self._weight_llm * llm_score +
+                         self._weight_news * news_score)
+        elif llm_active:
+            w_tech = self._weight_technical + self._weight_news
+            adjustment = w_tech * tech_score + self._weight_llm * llm_score
+        elif news_active:
+            w_tech = self._weight_technical + self._weight_llm
+            adjustment = w_tech * tech_score + self._weight_news * news_score
         else:
-            adjustment = 0.0
+            adjustment = tech_score
 
-        # Apply adjustment
+        adjustment = max(-self._max_boost, min(self._max_boost, adjustment))
         new_confidence = max(0.0, min(1.0, signal.confidence + adjustment))
 
         if new_confidence != signal.confidence:
             logger.debug(
-                "AI adjusted confidence for %s %s: %.2f -> %.2f (adj=%.3f)",
+                "AI adjusted %s %s: %.2f -> %.2f (tech=%.3f llm=%.3f news=%.3f)",
                 signal.strategy_id, signal.symbol, signal.confidence,
-                new_confidence, adjustment,
+                new_confidence, tech_score, llm_score, news_score,
             )
 
         signal.confidence = new_confidence
@@ -106,6 +140,48 @@ class AIAnalysis:
             signal.strength = SignalStrength.WEAK
 
         return signal
+
+    # --- LLM + News factors ---
+
+    def _get_llm_adjustment(self, signal: Signal) -> float:
+        """Get confidence adjustment from LLM analysis."""
+        try:
+            df = self._market_data.get_dataframe(signal.symbol, Timeframe.M5)
+            if df is None or df.empty:
+                return 0.0
+
+            indicators: dict[str, Any] = {
+                "price": signal.entry_price,
+                "side": signal.side.name,
+                "strategy": signal.strategy_id,
+            }
+            for col in ["rsi_14", "atr_14", "ema_9", "ema_21", "vwap"]:
+                if col in df.columns and not np.isnan(df[col].iloc[-1]):
+                    indicators[col] = float(df[col].iloc[-1])
+
+            result = self._llm_client.analyze_market_context(
+                symbol=signal.symbol,
+                indicators=indicators,
+                regime="unknown",
+                asset_type="stock",
+            )
+            return result.get("confidence_adjustment", 0.0)
+        except Exception:
+            logger.debug("LLM adjustment failed for %s", signal.symbol)
+            return 0.0
+
+    def _get_news_adjustment(self, signal: Signal) -> float:
+        """Get confidence adjustment from news sentiment."""
+        try:
+            sentiment = self._news_sentiment.get_sentiment(signal.symbol, asset_type="stock")
+            from stocks.core.enums import OrderSide
+            if signal.side == OrderSide.BUY:
+                return sentiment * self._min_boost
+            else:
+                return -sentiment * self._min_boost
+        except Exception:
+            logger.debug("News adjustment failed for %s", signal.symbol)
+            return 0.0
 
     def _check_trend_alignment(self, signal: Signal) -> float:
         """Boost if signal aligns with higher-timeframe trend."""
