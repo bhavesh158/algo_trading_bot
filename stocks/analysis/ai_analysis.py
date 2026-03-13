@@ -66,6 +66,18 @@ class AIAnalysis:
         vol_confirm = self._check_volume_confirmation(signal)
         adjustments.append(vol_confirm)
 
+        # Factor 5: VWAP position
+        vwap_adj = self._check_vwap_position(signal)
+        adjustments.append(vwap_adj)
+
+        # Factor 6: Support/resistance proximity
+        sr_adj = self._check_support_resistance(signal)
+        adjustments.append(sr_adj)
+
+        # Factor 7: Candle pattern recognition
+        pattern_adj = self._check_candle_patterns(signal)
+        adjustments.append(pattern_adj)
+
         # Calculate total adjustment (average of factors, clamped)
         if adjustments:
             avg_adj = sum(adjustments) / len(adjustments)
@@ -184,5 +196,115 @@ class AIAnalysis:
             return self._min_boost  # Strong volume
         elif ratio < 0.5:
             return -self._min_boost  # Weak volume
+
+        return 0.0
+
+    def _check_vwap_position(self, signal: Signal) -> float:
+        """Boost signals aligned with VWAP (buy below, sell above)."""
+        vwap = self._market_data.get_indicator(signal.symbol, Timeframe.M5, "vwap")
+        if vwap is None or vwap.empty or np.isnan(vwap.iloc[-1]):
+            return 0.0
+
+        vwap_val = float(vwap.iloc[-1])
+        price = signal.entry_price
+
+        if price <= 0 or vwap_val <= 0:
+            return 0.0
+
+        from stocks.core.enums import OrderSide
+        if signal.side == OrderSide.BUY and price < vwap_val:
+            return self._min_boost  # Buying below VWAP — good
+        elif signal.side == OrderSide.BUY and price > vwap_val * 1.01:
+            return -self._min_boost * 0.5  # Buying well above VWAP — slight penalty
+        elif signal.side == OrderSide.SELL and price > vwap_val:
+            return self._min_boost  # Selling above VWAP — good
+        elif signal.side == OrderSide.SELL and price < vwap_val * 0.99:
+            return -self._min_boost * 0.5  # Selling well below VWAP — slight penalty
+
+        return 0.0
+
+    def _check_support_resistance(self, signal: Signal) -> float:
+        """Boost if entry price is near a support (for BUY) or resistance (for SELL)."""
+        df = self._market_data.get_dataframe(signal.symbol, Timeframe.M5)
+        if df is None or len(df) < self._lookback:
+            return 0.0
+
+        price = signal.entry_price
+        recent = df.iloc[-self._lookback:]
+
+        # Find recent support (lowest lows) and resistance (highest highs)
+        support = float(recent["low"].rolling(5).min().iloc[-1])
+        resistance = float(recent["high"].rolling(5).max().iloc[-1])
+
+        if np.isnan(support) or np.isnan(resistance):
+            return 0.0
+
+        price_range = resistance - support
+        if price_range <= 0:
+            return 0.0
+
+        from stocks.core.enums import OrderSide
+        if signal.side == OrderSide.BUY:
+            # Boost if near support (bottom 20% of range)
+            if price <= support + price_range * 0.2:
+                return self._min_boost
+            # Penalize if near resistance
+            if price >= resistance - price_range * 0.1:
+                return -self._min_boost * 0.5
+        elif signal.side == OrderSide.SELL:
+            # Boost if near resistance
+            if price >= resistance - price_range * 0.2:
+                return self._min_boost
+            # Penalize if near support
+            if price <= support + price_range * 0.1:
+                return -self._min_boost * 0.5
+
+        return 0.0
+
+    def _check_candle_patterns(self, signal: Signal) -> float:
+        """Detect simple reversal candle patterns."""
+        df = self._market_data.get_dataframe(signal.symbol, Timeframe.M5)
+        if df is None or len(df) < 3:
+            return 0.0
+
+        latest = df.iloc[-1]
+        prev = df.iloc[-2]
+
+        o = float(latest["open"])
+        h = float(latest["high"])
+        l = float(latest["low"])
+        c = float(latest["close"])
+        body = abs(c - o)
+        candle_range = h - l
+
+        if candle_range == 0:
+            return 0.0
+
+        from stocks.core.enums import OrderSide
+
+        # Hammer (bullish reversal): small body at top, long lower wick
+        if signal.side == OrderSide.BUY:
+            lower_wick = min(o, c) - l
+            if body > 0 and lower_wick > body * 2 and (h - max(o, c)) < body * 0.5:
+                return self._min_boost  # Hammer pattern
+
+            # Bullish engulfing: current candle body engulfs previous bearish body
+            prev_o = float(prev["open"])
+            prev_c = float(prev["close"])
+            if prev_c < prev_o and c > o:  # Previous bearish, current bullish
+                if c > prev_o and o < prev_c:  # Current engulfs previous
+                    return self._min_boost
+
+        # Shooting star / bearish engulfing (for SELL signals)
+        elif signal.side == OrderSide.SELL:
+            upper_wick = h - max(o, c)
+            if body > 0 and upper_wick > body * 2 and (min(o, c) - l) < body * 0.5:
+                return self._min_boost  # Shooting star
+
+            prev_o = float(prev["open"])
+            prev_c = float(prev["close"])
+            if prev_c > prev_o and c < o:  # Previous bullish, current bearish
+                if o > prev_c and c < prev_o:  # Current engulfs previous
+                    return self._min_boost
 
         return 0.0

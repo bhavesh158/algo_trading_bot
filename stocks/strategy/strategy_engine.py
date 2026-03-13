@@ -29,6 +29,9 @@ _STRATEGY_REGISTRY: dict[str, tuple[str, str]] = {
     "opening_range_breakout": (
         "stocks.strategy.strategies.opening_range_breakout", "OpeningRangeBreakoutStrategy"
     ),
+    "vwap_reversion": (
+        "stocks.strategy.strategies.vwap_reversion", "VWAPReversionStrategy"
+    ),
 }
 
 
@@ -43,6 +46,7 @@ class StrategyEngine:
         position_sizer: Any,
         ai_analysis: Any,
         regime_detector: Any,
+        multi_tf: Any = None,
     ) -> None:
         self.config = config
         self.event_bus = event_bus
@@ -50,6 +54,7 @@ class StrategyEngine:
         self.position_sizer = position_sizer
         self.ai_analysis = ai_analysis
         self.regime_detector = regime_detector
+        self.multi_tf = multi_tf
 
         self._strategies: list[BaseStrategy] = []
         self._confidence_threshold = config.get("strategies", {}).get(
@@ -133,10 +138,28 @@ class StrategyEngine:
         return validated
 
     def _filter_signals(self, signals: list[Signal]) -> list[Signal]:
-        """Apply AI analysis, confidence threshold, and risk checks."""
+        """Apply AI analysis, multi-timeframe confirmation, confidence threshold, and risk checks."""
         validated: list[Signal] = []
 
         for signal in signals:
+            # Multi-timeframe confirmation (if available)
+            if self.multi_tf is not None:
+                # Determine the signal's primary timeframe from the strategy
+                signal_tf = self._get_strategy_timeframe(signal.strategy_id)
+                mtf_score = self.multi_tf.confirm_signal(signal, signal_tf)
+
+                # Reject signals strongly opposed by higher timeframes
+                if mtf_score < -0.5:
+                    logger.debug(
+                        "Signal filtered (MTF against): %s %s mtf_score=%.2f",
+                        signal.strategy_id, signal.symbol, mtf_score,
+                    )
+                    continue
+
+                # Apply MTF score as confidence adjustment
+                mtf_adjustment = mtf_score * 0.15  # Scale: -0.15 to +0.15
+                signal.confidence = max(0.0, min(1.0, signal.confidence + mtf_adjustment))
+
             # AI confidence boost/penalty
             signal = self.ai_analysis.evaluate_signal(signal)
 
@@ -169,6 +192,14 @@ class StrategyEngine:
 
         return validated
 
+    def _get_strategy_timeframe(self, strategy_id: str) -> Any:
+        """Get the primary timeframe for a strategy."""
+        from stocks.core.enums import Timeframe
+        for s in self._strategies:
+            if s.strategy_id == strategy_id:
+                return s.primary_timeframe
+        return Timeframe.M5
+
     @staticmethod
     def _is_strategy_suitable(strategy: BaseStrategy, regime: MarketRegime) -> bool:
         """Check if a strategy is suitable for the current market regime."""
@@ -185,11 +216,23 @@ class StrategyEngine:
                 MarketRegime.HIGH_VOLATILITY, MarketRegime.UNKNOWN,
             )
 
+        # VWAP reversion works in sideways and moderate conditions
+        if strategy.strategy_id == "vwap_reversion":
+            return regime in (
+                MarketRegime.SIDEWAYS, MarketRegime.LOW_VOLATILITY,
+                MarketRegime.TRENDING_UP, MarketRegime.TRENDING_DOWN,
+                MarketRegime.UNKNOWN,
+            )
+
         # ORB works in most conditions
         return True
 
     def check_exits(self, symbols: list[str], positions: dict[str, Any]) -> list[Signal]:
-        """Check if any open positions should be exited."""
+        """Check if any open positions should be exited.
+
+        Now passes the Position object to get_exit_signal for trailing stop
+        and time-based exit checks.
+        """
         exit_signals: list[Signal] = []
 
         for symbol, pos in positions.items():
@@ -198,7 +241,10 @@ class StrategyEngine:
                     continue
                 current_price = pos.get("current_price", 0)
                 entry_price = pos.get("entry_price", 0)
-                exit_signal = strategy.get_exit_signal(symbol, entry_price, current_price)
+                position_obj = pos.get("position")  # Full Position object
+                exit_signal = strategy.get_exit_signal(
+                    symbol, entry_price, current_price, position=position_obj,
+                )
                 if exit_signal:
                     exit_signals.append(exit_signal)
 

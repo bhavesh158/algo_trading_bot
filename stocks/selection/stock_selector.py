@@ -40,6 +40,9 @@ NIFTY50_SYMBOLS = [
     "HAL.NS", "BANKBARODA.NS", "IOC.NS", "PNB.NS", "IRFC.NS",
     "ETERNAL.NS", "JIOFIN.NS", "DLF.NS", "ABB.NS", "VEDL.NS",
     "TATAPOWER.NS", "CANBK.NS", "RECLTD.NS", "PFC.NS", "NHPC.NS",
+    # --- Oil & Gas / Energy (macro tailwind: geopolitical tensions) ---
+    "GAIL.NS", "OIL.NS", "PETRONET.NS", "HINDPETRO.NS",
+    "ADANIGREEN.NS", "ADANIENSOL.NS", "MGL.NS", "IGL.NS", "GSPL.NS",
 ]
 
 
@@ -62,10 +65,19 @@ class StockSelector:
         self._max_price = sel_config.get("max_price", 10_000.0)
         self._max_watchlist_size = sel_config.get("max_watchlist_size", 20)
 
+        # Priority symbols (sector momentum / macro tailwinds)
+        self._priority_symbols: set[str] = set(
+            sel_config.get("priority_symbols", [])
+        )
+        self._sector_momentum_boost = sel_config.get("sector_momentum_boost", 25)
+
         self._watchlist: list[str] = []
         self._candidate_pool: list[str] = list(NIFTY50_SYMBOLS)
 
-        logger.info("StockSelector initialized (pool_size=%d)", len(self._candidate_pool))
+        logger.info(
+            "StockSelector initialized (pool_size=%d, priority=%d)",
+            len(self._candidate_pool), len(self._priority_symbols),
+        )
 
     def build_watchlist(self) -> list[str]:
         """Score and rank candidates to build today's watchlist.
@@ -74,24 +86,40 @@ class StockSelector:
         - Volume (higher = better)
         - Volatility (moderate preferred)
         - Price within range
+        - Sector momentum boost for priority symbols
         """
         scored: list[tuple[str, float]] = []
 
         for symbol in self._candidate_pool:
             score = self._score_symbol(symbol)
             if score > 0:
+                # Sector momentum: boost priority symbols (e.g. oil/gas during war)
+                if symbol in self._priority_symbols:
+                    score += self._sector_momentum_boost
                 scored.append((symbol, score))
 
         # Sort by score descending, take top N
         scored.sort(key=lambda x: x[1], reverse=True)
         self._watchlist = [s for s, _ in scored[: self._max_watchlist_size]]
 
+        # Ensure priority symbols are included if they pass basic filters
+        # (even if they didn't score high enough for top N)
+        watchlist_set = set(self._watchlist)
+        for symbol in self._priority_symbols:
+            if symbol not in watchlist_set:
+                score = self._score_symbol(symbol)
+                if score > 0:  # Passes basic filters
+                    self._watchlist.append(symbol)
+                    watchlist_set.add(symbol)
+
         logger.info(
-            "Watchlist built: %d symbols selected from %d candidates",
+            "Watchlist built: %d symbols selected from %d candidates (%d priority)",
             len(self._watchlist), len(self._candidate_pool),
+            len(self._priority_symbols & watchlist_set),
         )
         for sym in self._watchlist:
-            logger.debug("  %s", sym)
+            tag = " [PRIORITY]" if sym in self._priority_symbols else ""
+            logger.debug("  %s%s", sym, tag)
 
         return self._watchlist
 

@@ -33,7 +33,12 @@ class OpeningRangeBreakoutStrategy(BaseStrategy):
         self._atr_target = strat_config.get("atr_multiplier_target", 3.0)
         self._max_window_minutes = strat_config.get("max_window_minutes", 60)
         self._volume_confirm = strat_config.get("volume_confirm", True)
+        self._min_range_atr_ratio = strat_config.get("min_range_atr_ratio", 0.5)
         self.primary_timeframe = Timeframe.M1
+
+        # Enable trailing stop and time exit from base class
+        self._trailing_stop_atr = strat_config.get("trailing_stop_atr", 1.2)
+        self._max_hold_minutes = strat_config.get("max_hold_minutes", 150)
 
         # Market open time (IST)
         sched = config.get("schedule", {})
@@ -117,47 +122,111 @@ class OpeningRangeBreakoutStrategy(BaseStrategy):
 
         buffer = or_high * self._buffer_pct / 100
 
+        # Range size filter: skip if opening range is too narrow
+        or_range = or_high - or_low
+        if atr_value > 0 and or_range < atr_value * self._min_range_atr_ratio:
+            logger.debug(
+                "[%s] ORB range too narrow for %s: range=%.2f < %.2f (%.1f×ATR)",
+                self.strategy_id, symbol, or_range,
+                atr_value * self._min_range_atr_ratio, self._min_range_atr_ratio,
+            )
+            return None
+
+        # Dynamic confidence based on range size, volume, and breakout strength
+        base_confidence = 0.55
+
         # Bullish breakout
         if current_price > or_high + buffer:
+            breakout_pct = (current_price - or_high) / or_high * 100
+            confidence = self._compute_dynamic_confidence(
+                base_confidence, or_range, atr_value, df, breakout_pct,
+            )
+            strength = SignalStrength.STRONG if confidence >= 0.75 else SignalStrength.MODERATE
+
             signal = Signal(
                 strategy_id=self.strategy_id,
                 symbol=symbol,
                 side=OrderSide.BUY,
-                strength=SignalStrength.MODERATE,
-                confidence=0.65,
+                strength=strength,
+                confidence=confidence,
                 entry_price=current_price,
                 stop_loss=current_price - self._atr_stop * atr_value,
                 target_price=current_price + self._atr_target * atr_value,
-                metadata={"or_high": or_high, "or_low": or_low, "direction": "bullish"},
+                metadata={
+                    "or_high": or_high, "or_low": or_low, "direction": "bullish",
+                    "max_hold_minutes": self._max_hold_minutes,
+                },
             )
             logger.info(
-                "[%s] ORB bullish breakout: %s price=%.2f > OR_high=%.2f",
-                self.strategy_id, symbol, current_price, or_high,
+                "[%s] ORB bullish breakout: %s price=%.2f > OR_high=%.2f conf=%.2f",
+                self.strategy_id, symbol, current_price, or_high, confidence,
             )
             self._signals_fired[symbol] = True
             return signal
 
         # Bearish breakout (sell signal)
         if current_price < or_low - buffer:
+            breakout_pct = (or_low - current_price) / or_low * 100
+            confidence = self._compute_dynamic_confidence(
+                base_confidence, or_range, atr_value, df, breakout_pct,
+            )
+            strength = SignalStrength.STRONG if confidence >= 0.75 else SignalStrength.MODERATE
+
             signal = Signal(
                 strategy_id=self.strategy_id,
                 symbol=symbol,
                 side=OrderSide.SELL,
-                strength=SignalStrength.MODERATE,
-                confidence=0.65,
+                strength=strength,
+                confidence=confidence,
                 entry_price=current_price,
                 stop_loss=current_price + self._atr_stop * atr_value,
                 target_price=current_price - self._atr_target * atr_value,
-                metadata={"or_high": or_high, "or_low": or_low, "direction": "bearish"},
+                metadata={
+                    "or_high": or_high, "or_low": or_low, "direction": "bearish",
+                    "max_hold_minutes": self._max_hold_minutes,
+                },
             )
             logger.info(
-                "[%s] ORB bearish breakout: %s price=%.2f < OR_low=%.2f",
-                self.strategy_id, symbol, current_price, or_low,
+                "[%s] ORB bearish breakout: %s price=%.2f < OR_low=%.2f conf=%.2f",
+                self.strategy_id, symbol, current_price, or_low, confidence,
             )
             self._signals_fired[symbol] = True
             return signal
 
         return None
+
+    @staticmethod
+    def _compute_dynamic_confidence(
+        base: float, or_range: float, atr_value: float,
+        df: Any, breakout_pct: float,
+    ) -> float:
+        """Compute confidence from range size, volume, and breakout strength."""
+        confidence = base
+
+        # Range quality: larger range relative to ATR = more meaningful breakout
+        if atr_value > 0:
+            range_ratio = or_range / atr_value
+            if range_ratio >= 1.0:
+                confidence += 0.1
+            elif range_ratio >= 0.7:
+                confidence += 0.05
+
+        # Volume surge at breakout candle
+        if "volume" in df.columns and len(df) >= 10:
+            current_vol = float(df["volume"].iloc[-1])
+            avg_vol = float(df["volume"].tail(10).mean())
+            if avg_vol > 0:
+                vol_ratio = current_vol / avg_vol
+                if vol_ratio > 2.0:
+                    confidence += 0.15
+                elif vol_ratio > 1.5:
+                    confidence += 0.1
+
+        # Breakout strength
+        if breakout_pct > 0.5:
+            confidence += 0.05
+
+        return min(confidence, 1.0)
 
     def should_exit(self, symbol: str, entry_price: float, current_price: float) -> bool:
         atr = self.market_data.get_indicator(symbol, Timeframe.M5, "atr_14")

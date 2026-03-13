@@ -42,6 +42,21 @@ selection:
   index_symbols:
     - "^NSEI"   # Nifty 50
     - "^NSEBANK"  # Bank Nifty
+  # Priority symbols get automatic watchlist inclusion if they pass basic filters.
+  # Use this for sectors with strong macro tailwinds (war → oil/gas, etc.)
+  priority_symbols:
+    - "ONGC.NS"
+    - "BPCL.NS"
+    - "IOC.NS"
+    - "GAIL.NS"
+    - "OIL.NS"
+    - "PETRONET.NS"
+    - "HINDPETRO.NS"
+    - "RELIANCE.NS"      # Significant O&G refining segment
+    - "VEDL.NS"          # Commodities/oil
+    - "COALINDIA.NS"     # Energy sector
+  # Sector momentum: boost score for symbols in these sectors
+  sector_momentum_boost: 25  # Extra points added to priority symbols' score
 
 # --- Scheduler / Anti-Churn ---
 scheduler:
@@ -56,15 +71,20 @@ strategies:
     - mean_reversion
     - momentum_breakout
     - opening_range_breakout
+    - vwap_reversion
   default_confidence_threshold: 0.65
 
 # --- Individual Strategy Configs ---
 mean_reversion:
   lookback_period: 20
-  entry_zscore: -2.0
+  entry_zscore: -2.2                  # Stricter entry — fewer false signals (was -2.0)
   exit_zscore: 0.0
   stop_zscore: -3.0
   min_exit_profit_pct: 0.5           # Don't exit below 0.5% gross profit (covers fees)
+  max_hold_minutes: 90               # Force exit after 90min to prevent bleeding
+  require_trend_alignment: true      # Only BUY when higher-TF trend is up/sideways
+  require_vwap_below: true           # Only BUY when price is below VWAP
+  rsi_capitulation_floor: 20         # Skip entry if RSI < 20 (capitulation)
 
 momentum_breakout:
   lookback_period: 20
@@ -72,6 +92,10 @@ momentum_breakout:
   breakout_threshold_pct: 1.0
   atr_multiplier_stop: 2.0
   atr_multiplier_target: 4.0         # Wider targets — let breakouts run (was 3.0)
+  trailing_stop_atr: 1.5             # Trail stop at highest - 1.5×ATR
+  max_hold_minutes: 180              # Max 3h hold for breakout trades
+  require_vwap_above: true           # Only enter breakouts above VWAP
+  volume_decay_exit_ratio: 0.7       # Exit if volume drops below 0.7× avg
 
 opening_range_breakout:
   opening_range_minutes: 15
@@ -80,6 +104,17 @@ opening_range_breakout:
   atr_multiplier_target: 3.0         # Wider target (was 2.5)
   max_window_minutes: 60             # Only fire within 60 min of market open
   volume_confirm: true               # Require above-average volume on breakout candle
+  trailing_stop_atr: 1.2             # Tighter trailing stop for ORB
+  max_hold_minutes: 150              # Max 2.5h hold
+  min_range_atr_ratio: 0.5           # Skip if OR range < 0.5×ATR (too narrow)
+
+vwap_reversion:
+  deviation_pct: 1.5                 # Enter when price > 1.5% from VWAP
+  exit_at_vwap: true                 # Exit when price returns to VWAP
+  require_trend_alignment: true      # Higher-TF trend must support direction
+  volume_multiplier: 1.2             # Require above-avg volume at entry
+  max_hold_minutes: 60               # Quick reversion trades
+  min_target_pct: 0.5                # Target must be > 0.5% to cover fees
 
 # --- AI Analysis ---
 ai_analysis:

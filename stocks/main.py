@@ -85,6 +85,7 @@ class TradingSystem:
         self.strategy_engine = StrategyEngine(
             self.config, self.event_bus, self.risk_manager,
             self.position_sizer, self.ai_analysis, self.regime_detector,
+            multi_tf=self.multi_tf,
         )
         self.performance_monitor = PerformanceMonitor(self.config, self.event_bus)
         self.report_generator = ReportGenerator(self.config, self.event_bus)

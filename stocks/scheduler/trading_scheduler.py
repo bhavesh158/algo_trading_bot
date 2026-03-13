@@ -249,6 +249,8 @@ class TradingScheduler:
 
         # Execute signals (with per-entry position limit + throttle)
         entries_this_cycle = 0
+        commission_per_trade = system.order_executor.commission
+
         for signal in signals:
             # Hard limit: re-check position count before EACH entry
             open_count = len(system.portfolio_manager.get_open_positions())
@@ -271,6 +273,22 @@ class TradingScheduler:
                         signal.strategy_id, signal.symbol, expected_pct, self._min_expected_profit_pct,
                     )
                     continue
+
+            # Commission-aware filter: expected gross profit must exceed 2× round-trip commission
+            if signal.target_price and signal.entry_price > 0 and commission_per_trade > 0:
+                quantity = system.position_sizer.calculate_quantity(signal)
+                if quantity > 0:
+                    if signal.side == OrderSide.BUY:
+                        expected_gross = (signal.target_price - signal.entry_price) * quantity
+                    else:
+                        expected_gross = (signal.entry_price - signal.target_price) * quantity
+                    round_trip_comm = commission_per_trade * 2
+                    if expected_gross < round_trip_comm * 2:
+                        logger.debug(
+                            "Signal filtered (comm drag): %s %s expected_gross=%.2f < 2×comm=%.2f",
+                            signal.strategy_id, signal.symbol, expected_gross, round_trip_comm * 2,
+                        )
+                        continue
 
             # Skip if already have a position in this symbol
             if signal.symbol in system.portfolio_manager.get_open_position_symbols():
@@ -297,6 +315,10 @@ class TradingScheduler:
             if filled_order.status.name == "FILLED":
                 entry_comm = system.order_executor.commission
                 pos = system.portfolio_manager.open_position(filled_order, entry_commission=entry_comm)
+                # Set max hold duration from signal metadata
+                max_hold = signal.metadata.get("max_hold_minutes", 0)
+                if max_hold > 0:
+                    pos.max_hold_minutes = max_hold
                 system.trade_journal.log_open(filled_order, pos)
                 entries_this_cycle += 1
 
@@ -304,12 +326,18 @@ class TradingScheduler:
         open_positions = system.portfolio_manager.get_open_positions()
         for symbol, pos in list(open_positions.items()):
             current_price = system.market_data_engine.get_current_price(symbol)
+
+            # Update position price extremes for trailing stops
+            if current_price > 0:
+                pos.update_extremes(current_price)
+
             exit_signals = system.strategy_engine.check_exits(
                 [symbol],
                 {symbol: {
                     "strategy_id": pos.strategy_id,
                     "entry_price": pos.entry_price,
                     "current_price": current_price,
+                    "position": pos,  # Pass full Position for trailing/time exits
                 }},
             )
             for exit_sig in exit_signals:
@@ -318,6 +346,11 @@ class TradingScheduler:
                     symbol, current_price, exit_comm
                 )
                 if trade:
+                    exit_reason = exit_sig.metadata.get("exit_reason", "strategy")
+                    logger.info(
+                        "Position closed [%s]: %s net=%.2f (reason=%s)",
+                        pos.strategy_id, symbol, trade.pnl, exit_reason,
+                    )
                     system.trade_journal.log_close(trade)
                     system.performance_monitor.record_trade(trade)
                     system.order_executor.release_symbol(symbol)

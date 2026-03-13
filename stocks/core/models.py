@@ -111,6 +111,29 @@ class Position:
     opened_at: datetime = field(default_factory=datetime.now)
     closed_at: Optional[datetime] = None
     entry_commission: float = 0.0  # Fee paid when opening the position
+    # Trailing stop tracking
+    highest_since_entry: float = 0.0   # Tracks peak price for long trailing stop
+    lowest_since_entry: float = 0.0    # Tracks trough price for short trailing stop
+    max_hold_minutes: int = 0          # Max hold duration (0 = no limit)
+
+    def update_extremes(self, price: float) -> None:
+        """Update highest/lowest price since entry for trailing stop."""
+        if self.highest_since_entry == 0:
+            self.highest_since_entry = price
+        if self.lowest_since_entry == 0:
+            self.lowest_since_entry = price
+        self.highest_since_entry = max(self.highest_since_entry, price)
+        self.lowest_since_entry = min(self.lowest_since_entry, price)
+
+    @property
+    def hold_duration_minutes(self) -> float:
+        """Minutes since position was opened."""
+        return (datetime.now() - self.opened_at).total_seconds() / 60
+
+    @property
+    def is_hold_expired(self) -> bool:
+        """True if position has exceeded max hold duration."""
+        return self.max_hold_minutes > 0 and self.hold_duration_minutes >= self.max_hold_minutes
 
     @property
     def unrealized_pnl(self) -> float:
