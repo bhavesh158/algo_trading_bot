@@ -84,21 +84,21 @@ strategies:
     - trend_following
     - mean_reversion
     - breakout_momentum
-  default_confidence_threshold: 0.6
+  default_confidence_threshold: 0.55   # was 0.6 — strategies rarely exceeded 0.60
   # Signal burst limiter — prevents correlated batch entries
   signal_burst_window_seconds: 600      # 10 min rolling window
-  max_signals_per_window: 3             # Max signals in the window
+  max_signals_per_window: 5             # Max signals in the window (was 3)
   per_symbol_cooldown_seconds: 900      # 15 min between signals for same symbol
 
 # --- Individual Strategy Configs ---
 trend_following:
   fast_ema: 9
   slow_ema: 21
-  adx_threshold: 30               # Only confirmed trends (was 25)
+  adx_threshold: 25               # was 30 — more signals in moderate trends
   atr_multiplier_stop: 2.5         # Wider stops — fewer premature stop-outs (was 2.0)
   atr_multiplier_target: 4.0       # Let trends run (was 3.0)
   require_htf_alignment: true      # 1h EMA trend must agree with 15m signal
-  volume_confirm_mult: 1.2         # Crossover candle must have 1.2x avg volume
+  # volume_confirm_mult removed — was blocking valid crossovers in low-vol
   trailing_stop_atr_multiplier: 2.0
   max_hold_minutes: 360            # 6 hours max
 
@@ -106,11 +106,11 @@ mean_reversion:
   bb_period: 20
   bb_std: 2.0
   rsi_period: 14
-  rsi_oversold: 25                 # Deeper extremes only (was 30)
-  rsi_overbought: 75               # Deeper extremes only (was 70)
+  rsi_oversold: 30                 # was 25 — widens signal window
+  rsi_overbought: 70               # was 75 — widens signal window
   atr_multiplier_stop: 1.5
   atr_multiplier_target: 3.0       # Wider targets — let reversion play out (was 2.0)
-  volume_confirm_mult: 1.2         # Require 1.2x avg volume for entry
+  # volume_confirm_mult removed — was blocking strategy entirely in low-vol
   min_exit_profit_pct: 1.0         # Don't strategy-exit below 1.0% profit (covers fees+tax+risk)
   trend_filter_enabled: true       # Skip BUY in downtrend, SELL in uptrend (EMA9 vs EMA21)
   rsi_capitulation_floor: 15       # Skip entry if RSI < 15 (free-fall)
@@ -207,7 +207,7 @@ scheduler:
   risk_reset_interval_hours: 24
   heartbeat_interval_cycles: 30    # ~5 min at 10s interval
   min_hold_seconds: 120            # Don't exit (except stop-loss) within 2 min of open
-  min_expected_profit_pct: 0.5     # Reject signals with <0.5% expected profit
+  min_expected_profit_pct: 0.3     # was 0.5 — ATR targets too small in low-vol
   max_entries_per_cycle: 2         # Max new positions per cycle (prevents correlated batch entries)
 
 # --- Reporting ---

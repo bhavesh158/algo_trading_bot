@@ -29,7 +29,6 @@ class MeanReversionStrategy(BaseStrategy):
         self._rsi_overbought = sc.get("rsi_overbought", 75)
         self._atr_stop_mult = sc.get("atr_multiplier_stop", 1.5)
         self._atr_target_mult = sc.get("atr_multiplier_target", 3.0)
-        self._vol_confirm_mult = sc.get("volume_confirm_mult", 1.2)
         self._min_exit_profit_pct = sc.get("min_exit_profit_pct", 1.0) / 100  # 1.0%
         self._trend_filter_enabled = sc.get("trend_filter_enabled", True)
         self._rsi_capitulation_floor = sc.get("rsi_capitulation_floor", 15)
@@ -79,15 +78,6 @@ class MeanReversionStrategy(BaseStrategy):
         bb_upper = df.get("bb_upper", pd.Series(dtype=float))
         curr_bb_upper = bb_upper.iloc[-1] if not bb_upper.empty else 0
 
-        # Volume confirmation: current candle volume must exceed average
-        volume = df.get("volume", pd.Series(dtype=float))
-        vol_sma = df.get("volume_sma", pd.Series(dtype=float))
-        if not volume.empty and not vol_sma.empty:
-            curr_vol = volume.iloc[-1]
-            avg_vol = vol_sma.iloc[-1]
-            if avg_vol > 0 and curr_vol < self._vol_confirm_mult * avg_vol:
-                return None  # insufficient volume — no conviction
-
         logger.debug(
             "[mean_reversion] %s | close=%.4f | BB_low=%.4f BB_up=%.4f | RSI=%.1f (need<%d or >%d)",
             symbol, close, curr_bb_lower, curr_bb_upper, curr_rsi,
@@ -113,7 +103,7 @@ class MeanReversionStrategy(BaseStrategy):
             target = bb_mid + self._atr_target_mult * curr_atr * 0.5
 
             # Deeper oversold = higher confidence
-            confidence = min(0.5 + (self._rsi_oversold - curr_rsi) / 50, 0.85)
+            confidence = min(0.5 + (self._rsi_oversold - curr_rsi) / 30, 0.85)
 
             return Signal(
                 strategy_id=self.strategy_id,
@@ -140,7 +130,7 @@ class MeanReversionStrategy(BaseStrategy):
             stop = close + self._atr_stop_mult * curr_atr
             target = bb_mid - self._atr_target_mult * curr_atr * 0.5
 
-            confidence = min(0.5 + (curr_rsi - self._rsi_overbought) / 50, 0.85)
+            confidence = min(0.5 + (curr_rsi - self._rsi_overbought) / 30, 0.85)
 
             return Signal(
                 strategy_id=self.strategy_id,

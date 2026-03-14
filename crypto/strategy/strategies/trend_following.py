@@ -31,7 +31,6 @@ class TrendFollowingStrategy(BaseStrategy):
         self._atr_stop_mult = sc.get("atr_multiplier_stop", 2.5)
         self._atr_target_mult = sc.get("atr_multiplier_target", 4.0)
         self._require_htf = sc.get("require_htf_alignment", True)
-        self._vol_confirm_mult = sc.get("volume_confirm_mult", 1.2)
         self.primary_timeframe = "15m"
         self._htf = "1h"
 
@@ -91,18 +90,7 @@ class TrendFollowingStrategy(BaseStrategy):
         if curr_adx < self._adx_threshold:
             return None
 
-        # Volume confirmation: crossover candle must have above-average volume
-        vol_sma = df.get("volume_sma", pd.Series(dtype=float))
-        if not vol_sma.empty and not pd.isna(vol_sma.iloc[-1]) and vol_sma.iloc[-1] > 0:
-            curr_vol = df["volume"].iloc[-1]
-            if curr_vol < self._vol_confirm_mult * vol_sma.iloc[-1]:
-                logger.debug(
-                    "[trend_following] %s SKIP: low volume on crossover (%.0f < %.1f×%.0f)",
-                    symbol, curr_vol, self._vol_confirm_mult, vol_sma.iloc[-1],
-                )
-                return None
-
-        ema_sep_pct = abs(fast_now - slow_now) / slow_now * 100 if slow_now > 0 else 0
+        ema_sep_pct
         price = float(df["close"].iloc[-1])
 
         logger.debug(
@@ -129,7 +117,7 @@ class TrendFollowingStrategy(BaseStrategy):
             stop = price + self._atr_stop_mult * curr_atr
             target = price - self._atr_target_mult * curr_atr
 
-        confidence = min(0.5 + (curr_adx - self._adx_threshold) / 50, 0.9)
+        confidence = min(0.5 + (curr_adx - self._adx_threshold) / 30, 0.9)
 
         return Signal(
             strategy_id=self.strategy_id,
