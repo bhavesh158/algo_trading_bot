@@ -90,7 +90,7 @@ class TrendFollowingStrategy(BaseStrategy):
         if curr_adx < self._adx_threshold:
             return None
 
-        ema_sep_pct
+        ema_sep_pct = abs(fast_now - slow_now) / slow_now * 100 if slow_now > 0 else 0
         price = float(df["close"].iloc[-1])
 
         logger.debug(
