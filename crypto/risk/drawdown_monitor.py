@@ -9,6 +9,7 @@ Tracks portfolio drawdown and triggers protective actions:
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING
 
 from crypto.core.event_bus import EventBus
@@ -36,6 +37,8 @@ class DrawdownMonitor:
         self.size_reduction_factor = dd.get("size_reduction_factor", 0.5)
 
         self.is_trading_paused = False
+        self._last_warning_log: datetime | None = None
+        self._warning_log_interval_seconds = dd.get("warning_log_interval_seconds", 300)  # 5 min
         logger.info(
             "DrawdownMonitor initialized (warn=%.1f%%, reduce=%.1f%%, pause=%.1f%%)",
             self._warning_pct, self._reduce_pct, self._pause_pct,
@@ -61,7 +64,11 @@ class DrawdownMonitor:
             return "reduce_size"
 
         if dd_pct >= self._warning_pct:
-            logger.info("Drawdown warning: %.1f%%", dd_pct)
+            now = datetime.now(timezone.utc)
+            if (self._last_warning_log is None or
+                    (now - self._last_warning_log).total_seconds() >= self._warning_log_interval_seconds):
+                logger.info("Drawdown warning: %.1f%% (capital=%.2f)", dd_pct, state.total_capital)
+                self._last_warning_log = now
             self.is_trading_paused = False
             return "warning"
 
