@@ -93,6 +93,7 @@ strategies:
   btc_trend_filter_enabled: true
   btc_trend_symbol: "BTC/USDT"
   btc_trend_timeframe: "1h"
+  max_same_direction_positions: 3  # Max simultaneous BUY (or SELL) positions — limits correlated losses
 
 # --- Individual Strategy Configs ---
 trend_following:

@@ -107,8 +107,10 @@ class ContinuousScheduler:
             logger.warning("No pairs passed selection filters — will retry on next refresh")
             return
 
-        # Load historical data
-        system.market_data_engine.load_historical_data(pairs)
+        # Load historical data — always include BTC for market direction filter
+        btc_symbol = system.config.get("strategies", {}).get("btc_trend_symbol", "BTC/USDT")
+        pairs_with_btc = list(dict.fromkeys([btc_symbol] + pairs))  # BTC first, dedup
+        system.market_data_engine.load_historical_data(pairs_with_btc)
 
         # Initialize analysis
         system.regime_detector.set_market_data(system.market_data_engine)
@@ -208,6 +210,10 @@ class ContinuousScheduler:
 
         # Run strategies — skip symbols that already have open positions
         open_symbols = system.portfolio_manager.get_open_position_symbols()
+        # Pass live positions to engine for same-direction correlation cap
+        system.strategy_engine.set_open_positions_ref(
+            system.portfolio_manager.get_open_positions()
+        )
         signals = system.strategy_engine.run_strategies(pairs, excluded_symbols=open_symbols)
 
         # Clean up stale cooldown entries

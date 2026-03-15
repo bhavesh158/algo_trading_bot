@@ -52,6 +52,8 @@ class StrategyEngine:
         self.regime_detector = regime_detector
 
         self._strategies: dict[str, BaseStrategy] = {}
+        self._open_positions_ref: dict | None = None  # injected by scheduler for correlation check
+        self._max_same_dir_positions = config.get("strategies", {}).get("max_same_direction_positions", 3)
         self._confidence_threshold = config.get("strategies", {}).get(
             "default_confidence_threshold", 0.6
         )
@@ -82,6 +84,10 @@ class StrategyEngine:
         """Wire in the market data engine for BTC trend checking."""
         self._market_data = market_data
 
+    def set_open_positions_ref(self, positions_ref: dict) -> None:
+        """Wire in live open positions dict for same-direction correlation check."""
+        self._open_positions_ref = positions_ref
+
     def _btc_market_bullish(self) -> bool | None:
         """Check BTC/USDT 1h EMA9 vs EMA21.
 
@@ -98,9 +104,12 @@ class StrategyEngine:
             if ema9.empty or ema21.empty:
                 return None
             v9, v21 = ema9.iloc[-1], ema21.iloc[-1]
+            close = float(df["close"].iloc[-1])
             if pd.isna(v9) or pd.isna(v21):
                 return None
-            return bool(v9 > v21)
+            # Require BOTH: EMA9 > EMA21 AND price above EMA21
+            # EMA-only check lags — price below EMA21 means market already extended downward
+            return bool(v9 > v21 and close > v21)
         except Exception:
             logger.debug("BTC trend check failed — not blocking signals")
             return None
@@ -200,7 +209,7 @@ class StrategyEngine:
                         continue
 
                     # BTC market direction filter: block BUY signals when BTC is downtrending
-                    # Prevents buying altcoins that are falling with the broader market
+                    # Requires BOTH EMA9>EMA21 AND price>EMA21 to filter lagging EMA crosses
                     if signal.side == OrderSide.BUY:
                         btc_bullish = self._btc_market_bullish()
                         if btc_bullish is False:
@@ -209,10 +218,24 @@ class StrategyEngine:
                                     (now_log - self._last_btc_filter_log).total_seconds()
                                     >= _BTC_FILTER_LOG_INTERVAL):
                                 logger.info(
-                                    "BTC FILTER: %s bearish (1h EMA9<EMA21) — blocking BUY signals",
+                                    "BTC FILTER: %s bearish — blocking BUY signals",
                                     self._btc_filter_symbol,
                                 )
                                 self._last_btc_filter_log = now_log
+                            continue
+
+                    # Correlated-position cap: block if too many open positions in same direction
+                    if self._open_positions_ref is not None:
+                        same_dir_count = sum(
+                            1 for pos in self._open_positions_ref.values()
+                            if pos.side == signal.side
+                        )
+                        if same_dir_count >= self._max_same_dir_positions:
+                            logger.debug(
+                                "CORR_CAP BLOCKED: %s %s — already %d open %s positions (max %d)",
+                                signal.side.name, symbol, same_dir_count,
+                                signal.side.name, self._max_same_dir_positions,
+                            )
                             continue
 
                     # Risk check
