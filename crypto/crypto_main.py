@@ -115,6 +115,9 @@ class CryptoTradingSystem:
             else:
                 raise RuntimeError("Failed to connect exchange adapter for live trading")
 
+        # Wire market data into strategy engine for BTC trend filter
+        self.strategy_engine.set_market_data(self.market_data_engine)
+
         self.scheduler.set_trading_system(self)
 
         # Crash recovery: check for restored positions and ensure pairs are tracked

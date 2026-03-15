@@ -11,12 +11,16 @@ from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+import pandas as pd
+
 from crypto.core.enums import MarketRegime, OrderSide
 from crypto.core.event_bus import EventBus
 from crypto.core.events import SignalEvent
 from crypto.core.models import Position, Signal
 from crypto.data.market_data_engine import MarketDataEngine
 from crypto.strategy.base_strategy import BaseStrategy
+
+_BTC_FILTER_LOG_INTERVAL = 1800  # log at most once per 30 min
 
 logger = logging.getLogger(__name__)
 
@@ -63,9 +67,43 @@ class StrategyEngine:
         self._recent_signals: deque[tuple[datetime, str]] = deque()  # (timestamp, symbol)
         self._last_signal_per_symbol: dict[str, datetime] = {}  # symbol -> last signal time
 
-        logger.info("StrategyEngine initialized (threshold=%.2f, burst_max=%d/%ds)",
+        # --- BTC market direction filter ---
+        self._market_data: MarketDataEngine | None = None
+        self._btc_filter_enabled = burst_cfg.get("btc_trend_filter_enabled", True)
+        self._btc_filter_symbol = burst_cfg.get("btc_trend_symbol", "BTC/USDT")
+        self._btc_filter_tf = burst_cfg.get("btc_trend_timeframe", "1h")
+        self._last_btc_filter_log: datetime | None = None
+
+        logger.info("StrategyEngine initialized (threshold=%.2f, burst_max=%d/%ds, btc_filter=%s)",
                     self._confidence_threshold, self._max_signals_per_window,
-                    self._burst_window_seconds)
+                    self._burst_window_seconds, self._btc_filter_enabled)
+
+    def set_market_data(self, market_data: MarketDataEngine) -> None:
+        """Wire in the market data engine for BTC trend checking."""
+        self._market_data = market_data
+
+    def _btc_market_bullish(self) -> bool | None:
+        """Check BTC/USDT 1h EMA9 vs EMA21.
+
+        Returns True (bullish), False (bearish), or None (data unavailable — don't block).
+        """
+        if not self._btc_filter_enabled or self._market_data is None:
+            return None
+        try:
+            df = self._market_data.get_dataframe(self._btc_filter_symbol, self._btc_filter_tf)
+            if df.empty or len(df) < 25:
+                return None
+            ema9 = df.get("ema_9", pd.Series(dtype=float))
+            ema21 = df.get("ema_21", pd.Series(dtype=float))
+            if ema9.empty or ema21.empty:
+                return None
+            v9, v21 = ema9.iloc[-1], ema21.iloc[-1]
+            if pd.isna(v9) or pd.isna(v21):
+                return None
+            return bool(v9 > v21)
+        except Exception:
+            logger.debug("BTC trend check failed — not blocking signals")
+            return None
 
     def load_strategies(self, market_data: MarketDataEngine) -> None:
         """Instantiate all configured strategies."""
@@ -160,6 +198,22 @@ class StrategyEngine:
                             continue
                     if name == "trend_following" and regime in _REGIME_BLOCK_TF:
                         continue
+
+                    # BTC market direction filter: block BUY signals when BTC is downtrending
+                    # Prevents buying altcoins that are falling with the broader market
+                    if signal.side == OrderSide.BUY:
+                        btc_bullish = self._btc_market_bullish()
+                        if btc_bullish is False:
+                            now_log = datetime.now(timezone.utc)
+                            if (self._last_btc_filter_log is None or
+                                    (now_log - self._last_btc_filter_log).total_seconds()
+                                    >= _BTC_FILTER_LOG_INTERVAL):
+                                logger.info(
+                                    "BTC FILTER: %s bearish (1h EMA9<EMA21) — blocking BUY signals",
+                                    self._btc_filter_symbol,
+                                )
+                                self._last_btc_filter_log = now_log
+                            continue
 
                     # Risk check
                     if not self.risk_manager.can_take_trade(signal):

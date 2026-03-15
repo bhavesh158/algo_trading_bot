@@ -89,6 +89,10 @@ strategies:
   signal_burst_window_seconds: 600      # 10 min rolling window
   max_signals_per_window: 5             # Max signals in the window (was 3)
   per_symbol_cooldown_seconds: 900      # 15 min between signals for same symbol
+  # BTC market direction filter — block all BUY signals when BTC 1h is bearish
+  btc_trend_filter_enabled: true
+  btc_trend_symbol: "BTC/USDT"
+  btc_trend_timeframe: "1h"
 
 # --- Individual Strategy Configs ---
 trend_following:
