@@ -67,6 +67,8 @@ class TradingSystem:
         from stocks.reporting.report_generator import ReportGenerator
         from stocks.reporting.alert_manager import AlertManager
         from stocks.reporting.trade_journal import TradeJournal
+        from common.macro_analyst import MacroAnalyst
+        from stocks.selection.stock_selector import NIFTY50_SYMBOLS
 
         # Instantiate components (order matters for dependency chain)
         self.trade_journal = TradeJournal(self.config)
@@ -90,6 +92,9 @@ class TradingSystem:
         self.performance_monitor = PerformanceMonitor(self.config, self.event_bus)
         self.report_generator = ReportGenerator(self.config, self.event_bus)
         self.scheduler = TradingScheduler(self.config, self.event_bus)
+        self.macro_analyst = MacroAnalyst(self.config)
+        # Pass the full NSE candidate universe so AI recommendations are safety-gated
+        self.macro_analyst.set_candidate_symbols(list(NIFTY50_SYMBOLS))
 
         self._components = [
             self.trade_journal,
@@ -114,6 +119,10 @@ class TradingSystem:
         # Wire broker adapter for live trading
         if self.mode == TradingMode.LIVE:
             self._setup_broker_adapter()
+
+        # Wire MacroAnalyst into strategy engine and stock selector
+        self.strategy_engine.set_macro_analyst(self.macro_analyst)
+        self.stock_selector.set_macro_analyst(self.macro_analyst)
 
         # Give scheduler a reference to this system for orchestration
         self.scheduler.set_trading_system(self)

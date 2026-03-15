@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from stocks.core.enums import MarketRegime
+from stocks.core.enums import MarketRegime, OrderSide
 from stocks.core.event_bus import EventBus
 from stocks.core.events import SignalEvent
 from stocks.core.models import Signal
@@ -61,7 +61,18 @@ class StrategyEngine:
             "default_confidence_threshold", 0.6
         )
 
+        # Macro context gating
+        self._macro_analyst: Any = None
+        macro_cfg = config.get("macro_analyst", {})
+        self._macro_apply_mood_filter: bool = macro_cfg.get("apply_mood_filter", True)
+        self._macro_apply_pair_bias: bool = macro_cfg.get("apply_pair_bias", True)
+        self._last_macro_block_log: Optional[Any] = None
+
         logger.info("StrategyEngine initialized")
+
+    def set_macro_analyst(self, macro_analyst: Any) -> None:
+        """Wire in the MacroAnalyst for macro-driven signal gating."""
+        self._macro_analyst = macro_analyst
 
     def load_strategies(self, market_data: MarketDataEngine) -> None:
         """Instantiate all enabled strategies from stocks.config."""
@@ -162,6 +173,53 @@ class StrategyEngine:
 
             # AI confidence boost/penalty
             signal = self.ai_analysis.evaluate_signal(signal)
+
+            # Macro context gates (mood filter, avoid list, directional bias)
+            # Fails-open: no valid macro context → no signals blocked.
+            if self._macro_analyst is not None:
+                macro_ctx = self._macro_analyst.get_context()
+                if macro_ctx and macro_ctx.is_valid:
+                    from datetime import datetime, timezone
+                    # Gate 1: risk_off mood blocks all new BUY entries
+                    if (
+                        self._macro_apply_mood_filter
+                        and getattr(signal, "side", None) == OrderSide.BUY
+                        and macro_ctx.blocks_buys
+                    ):
+                        now_log = datetime.now(timezone.utc)
+                        if (
+                            self._last_macro_block_log is None
+                            or (now_log - self._last_macro_block_log).total_seconds() >= 1800
+                        ):
+                            logger.info(
+                                "MACRO BLOCKED BUY: mood=%s(%.2f) themes=%s",
+                                macro_ctx.market_mood, macro_ctx.mood_confidence,
+                                ", ".join(macro_ctx.active_themes) or "none",
+                            )
+                            self._last_macro_block_log = now_log
+                        continue
+
+                    # Gate 2: hard-block symbols on the avoid list
+                    if macro_ctx.should_avoid(signal.symbol):
+                        logger.debug(
+                            "MACRO AVOID: %s is on avoid list — signal blocked", signal.symbol
+                        )
+                        continue
+
+                    # Gate 3: directional bias mismatch
+                    if self._macro_apply_pair_bias:
+                        bias = macro_ctx.get_pair_bias(signal.symbol)
+                        sig_side = getattr(signal, "side", None)
+                        if sig_side == OrderSide.BUY and bias == "SELL":
+                            logger.debug(
+                                "MACRO BIAS BLOCKED: %s BUY — AI bias is SELL", signal.symbol
+                            )
+                            continue
+                        if sig_side == OrderSide.SELL and bias == "BUY":
+                            logger.debug(
+                                "MACRO BIAS BLOCKED: %s SELL — AI bias is BUY", signal.symbol
+                            )
+                            continue
 
             # Confidence threshold
             if signal.confidence < self._confidence_threshold:

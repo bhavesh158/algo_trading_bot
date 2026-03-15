@@ -55,8 +55,8 @@ _RISK_ON_KEYWORDS: frozenset[str] = frozenset({
     "approval", "approved", "listing", "staking reward",
 })
 
-# RSS feeds fetched for macro context (order: crypto-specific first, macro second)
-_RSS_FEEDS: list[tuple[str, int]] = [
+# RSS feeds for crypto mode
+_CRYPTO_RSS_FEEDS: list[tuple[str, int]] = [
     ("https://cointelegraph.com/rss", 12),
     (
         "https://news.google.com/rss/search"
@@ -70,10 +70,50 @@ _RSS_FEEDS: list[tuple[str, int]] = [
     ),
 ]
 
-_MACRO_SYSTEM_PROMPT = (
+# RSS feeds for Indian NSE stocks mode
+_STOCK_NSE_RSS_FEEDS: list[tuple[str, int]] = [
+    ("https://economictimes.indiatimes.com/rssfeedstopstories.cms", 12),
+    ("https://www.moneycontrol.com/rss/latestnews.xml", 10),
+    (
+        "https://news.google.com/rss/search"
+        "?q=india+stock+market+nifty+sensex&hl=en&gl=IN&ceid=IN:en",
+        10,
+    ),
+    (
+        "https://news.google.com/rss/search"
+        "?q=india+economy+RBI+FII+oil+price&hl=en&gl=IN&ceid=IN:en",
+        8,
+    ),
+]
+
+# Additional India-specific keywords for the fallback scorer
+_INDIA_RISK_OFF_KEYWORDS: frozenset[str] = frozenset({
+    "fii selling", "fii outflow", "fii sold", "foreign selling",
+    "rupee fall", "rupee depreciation", "inr weakness",
+    "npa crisis", "banking crisis", "sebi ban", "rbi tightening",
+    "nifty crash", "nifty fall", "circuit breaker",
+    "import duty hike", "trade deficit", "current account deficit",
+})
+_INDIA_RISK_ON_KEYWORDS: frozenset[str] = frozenset({
+    "fii buying", "fii inflow", "fii bought", "foreign buying",
+    "dii buying", "rupee gains", "inr strengthens",
+    "rbi rate cut", "rbi easing", "gdp growth",
+    "nifty rally", "nifty record", "bull market india",
+    "festive season", "capex boost", "infrastructure spend",
+    "robust earnings", "strong quarterly results",
+})
+
+_MACRO_SYSTEM_PROMPT_CRYPTO = (
     "You are a macro trading analyst for a crypto algorithmic trading bot. "
     "Analyze the provided news headlines and market sentiment data, then respond "
     "ONLY with valid JSON matching the requested schema. Be concise and precise."
+)
+
+_MACRO_SYSTEM_PROMPT_STOCK_NSE = (
+    "You are a macro trading analyst for an Indian NSE equity algorithmic trading bot. "
+    "Analyze the provided news headlines and identify macro factors affecting Indian stocks "
+    "(FII/DII flows, RBI/Fed policy, oil prices, USD/INR, sector-specific catalysts). "
+    "Respond ONLY with valid JSON matching the requested schema. Be concise and precise."
 )
 
 
@@ -149,8 +189,10 @@ class MacroAnalyst:
         self._max_ai_pairs: int = int(cfg.get("max_ai_pairs", 3))
         self._apply_mood_filter: bool = cfg.get("apply_mood_filter", True)
         self._apply_pair_bias: bool = cfg.get("apply_pair_bias", True)
+        # "crypto" or "stock_nse" — drives news sources, LLM prompt, symbol normalisation
+        self._asset_type: str = cfg.get("asset_type", "crypto")
 
-        # All known candidate pairs (for safety gating — AI can only suggest these)
+        # All known candidate symbols (AI can only suggest from this list — safety gate)
         self._candidate_pairs: list[str] = config.get("selection", {}).get("candidate_pairs", [])
 
         # Optional CryptoPanic API key (public endpoint still works without it)
@@ -166,8 +208,9 @@ class MacroAnalyst:
 
         if self._enabled:
             logger.info(
-                "MacroAnalyst initialized (refresh=%dm, llm=%s, candidates=%d, "
+                "MacroAnalyst initialized (asset=%s, refresh=%dm, llm=%s, candidates=%d, "
                 "mood_filter=%s, pair_bias=%s)",
+                self._asset_type,
                 self._refresh_minutes,
                 self._llm_client.is_enabled if self._llm_client else False,
                 len(self._candidate_pairs),
@@ -180,6 +223,11 @@ class MacroAnalyst:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    def set_candidate_symbols(self, symbols: list[str]) -> None:
+        """Override the candidate symbol list (used by stocks module to pass NIFTY50_SYMBOLS)."""
+        self._candidate_pairs = list(symbols)
+        logger.debug("MacroAnalyst candidate symbols updated: %d symbols", len(symbols))
 
     @property
     def is_enabled(self) -> bool:
@@ -251,9 +299,15 @@ class MacroAnalyst:
         """Gather headlines from all sources; return deduplicated list."""
         headlines: list[str] = []
 
-        headlines.extend(self._fetch_cryptopanic())
-        for url, limit in _RSS_FEEDS:
-            headlines.extend(self._fetch_rss(url, limit))
+        if self._asset_type == "stock_nse":
+            # Indian stock news — CryptoPanic not relevant
+            for url, limit in _STOCK_NSE_RSS_FEEDS:
+                headlines.extend(self._fetch_rss(url, limit))
+        else:
+            # Crypto mode
+            headlines.extend(self._fetch_cryptopanic())
+            for url, limit in _CRYPTO_RSS_FEEDS:
+                headlines.extend(self._fetch_rss(url, limit))
 
         # Deduplicate preserving order
         seen: set[str] = set()
@@ -302,7 +356,12 @@ class MacroAnalyst:
         return headlines
 
     def _fetch_fear_greed(self) -> tuple[int, str]:
-        """Alternative.me Fear & Greed Index (free, no API key needed)."""
+        """Fetch the Crypto Fear & Greed Index (crypto mode only).
+
+        For stock_nse mode there is no free equivalent, so 50/Neutral is returned.
+        """
+        if self._asset_type == "stock_nse":
+            return 50, "Neutral"  # no free NSE-specific F&G index
         try:
             req = Request(
                 "https://api.alternative.me/fng/?limit=1",
@@ -338,6 +397,17 @@ class MacroAnalyst:
         fear_greed_label: str,
     ) -> MacroContext:
         """Ask the LLM to classify macro context from headlines."""
+        if self._asset_type == "stock_nse":
+            return self._analyze_with_llm_stocks(headlines, fear_greed_score, fear_greed_label)
+        return self._analyze_with_llm_crypto(headlines, fear_greed_score, fear_greed_label)
+
+    def _analyze_with_llm_crypto(
+        self,
+        headlines: list[str],
+        fear_greed_score: int,
+        fear_greed_label: str,
+    ) -> MacroContext:
+        """LLM analysis for crypto mode."""
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         headlines_text = "\n".join(f"- {h}" for h in headlines[:30])
         candidate_symbols = [p.split("/")[0] for p in self._candidate_pairs[:25]]
@@ -371,7 +441,7 @@ Rules:
 - Only recommend directional biases / new pairs when there is a clear macro catalyst"""
 
         raw = self._llm_client.call_raw(
-            system_prompt=_MACRO_SYSTEM_PROMPT,
+            system_prompt=_MACRO_SYSTEM_PROMPT_CRYPTO,
             user_prompt=user_prompt,
             cache_key="macro_context",
             max_tokens=900,
@@ -385,6 +455,66 @@ Rules:
             return self._parse_llm_response(raw, fear_greed_score, fear_greed_label)
         except Exception:
             logger.exception("MacroAnalyst: failed to parse LLM response — falling back")
+            return self._analyze_with_keywords(headlines, fear_greed_score, fear_greed_label)
+
+    def _analyze_with_llm_stocks(
+        self,
+        headlines: list[str],
+        fear_greed_score: int,
+        fear_greed_label: str,
+    ) -> MacroContext:
+        """LLM analysis for Indian NSE stock mode."""
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        headlines_text = "\n".join(f"- {h}" for h in headlines[:30])
+        # Strip .NS suffix for readability in the prompt
+        candidate_symbols = [
+            s.replace(".NS", "") for s in self._candidate_pairs[:30]
+        ]
+
+        user_prompt = f"""Current time: {now_str} (Indian market)
+Available NSE stock symbols (add .NS suffix when referencing): {", ".join(candidate_symbols)}
+
+Recent news headlines (Indian & global macro):
+{headlines_text}
+
+Respond with JSON matching this exact schema:
+{{
+  "market_mood": "risk_on|risk_off|neutral",
+  "mood_confidence": <float 0.0-1.0>,
+  "active_themes": ["<theme>", ...],
+  "pair_recommendations": [
+    {{"symbol": "<SYMBOL.NS>", "bias": "BUY|SELL|NEUTRAL", "confidence": <float>, "reason": "<brief>"}}
+  ],
+  "pairs_to_add": ["<SYMBOL.NS>", ...],
+  "avoid_pairs": ["<SYMBOL.NS>", ...],
+  "reasoning": "<1-2 sentence macro summary for Indian market>"
+}}
+
+Rules:
+- pairs_to_add: max {self._max_ai_pairs}; symbols with strong macro tailwinds this session
+- avoid_pairs: stocks to skip today (sector headwind, regulatory risk, etc.)
+- mood = risk_off if: FII outflows, rupee weakness, global risk-off, RBI tightening, geopolitical risk
+- mood = risk_on  if: FII inflows, strong GDP/earnings, RBI easing, infrastructure boost, positive global cues
+- mood = neutral  if: mixed signals
+- Key sector sensitivities: oil price up → ONGC/BPCL/IOC/GAIL BUY; FII selling → Banks SELL;
+  USD strength → IT (INFY/TCS) tailwind; RBI rate cut → Banks/NBFCs BUY
+- Only recommend when there is a clear macro catalyst from today's headlines"""
+
+        raw = self._llm_client.call_raw(
+            system_prompt=_MACRO_SYSTEM_PROMPT_STOCK_NSE,
+            user_prompt=user_prompt,
+            cache_key="macro_context_stocks",
+            max_tokens=900,
+        )
+
+        if not raw:
+            logger.info("MacroAnalyst: LLM returned empty (stocks) — falling back to keywords")
+            return self._analyze_with_keywords(headlines, fear_greed_score, fear_greed_label)
+
+        try:
+            return self._parse_llm_response(raw, fear_greed_score, fear_greed_label)
+        except Exception:
+            logger.exception("MacroAnalyst: failed to parse LLM stocks response — falling back")
             return self._analyze_with_keywords(headlines, fear_greed_score, fear_greed_label)
 
     def _parse_llm_response(
@@ -413,22 +543,17 @@ Rules:
         candidate_set = set(self._candidate_pairs)
         recs: list[PairRecommendation] = []
         for item in raw.get("pair_recommendations", [])[:12]:
-            sym = str(item.get("symbol", "")).upper()
+            sym = self._normalise_symbol(str(item.get("symbol", "")))
             bias = str(item.get("bias", "NEUTRAL")).upper()
             conf = float(item.get("confidence", 0.5))
             reason = str(item.get("reason", ""))[:200]
-            # Normalise "BTC" → "BTC/USDT" if caller omitted the quote
-            if "/" not in sym:
-                sym = sym + "/USDT"
             if sym in candidate_set and bias in ("BUY", "SELL", "NEUTRAL"):
                 recs.append(PairRecommendation(sym, bias, conf, reason))
 
         # pairs_to_add
         pairs_to_add: list[str] = []
         for p in raw.get("pairs_to_add", []):
-            sym = str(p).upper()
-            if "/" not in sym:
-                sym = sym + "/USDT"
+            sym = self._normalise_symbol(str(p))
             if sym in candidate_set and sym not in pairs_to_add:
                 pairs_to_add.append(sym)
                 if len(pairs_to_add) >= self._max_ai_pairs:
@@ -437,9 +562,7 @@ Rules:
         # avoid_pairs
         avoid_pairs: list[str] = []
         for p in raw.get("avoid_pairs", []):
-            sym = str(p).upper()
-            if "/" not in sym:
-                sym = sym + "/USDT"
+            sym = self._normalise_symbol(str(p))
             if sym in candidate_set:
                 avoid_pairs.append(sym)
         avoid_pairs = avoid_pairs[:10]
@@ -464,6 +587,22 @@ Rules:
     # Keyword-based fallback
     # ------------------------------------------------------------------
 
+    def _normalise_symbol(self, raw_sym: str) -> str:
+        """Normalise a symbol from LLM output to the expected format.
+
+        crypto   : "BTC"        → "BTC/USDT"
+        stock_nse: "RELIANCE"   → "RELIANCE.NS"
+                   "RELIANCE.NS" → "RELIANCE.NS"  (already correct)
+        """
+        sym = raw_sym.strip().upper()
+        if self._asset_type == "stock_nse":
+            if not sym.endswith(".NS") and "." not in sym:
+                sym = sym + ".NS"
+        else:  # crypto
+            if "/" not in sym:
+                sym = sym + "/USDT"
+        return sym
+
     def _analyze_with_keywords(
         self,
         headlines: list[str],
@@ -475,6 +614,11 @@ Rules:
 
         risk_off_score = sum(1 for kw in _RISK_OFF_KEYWORDS if kw in all_text)
         risk_on_score = sum(1 for kw in _RISK_ON_KEYWORDS if kw in all_text)
+
+        # Add India-specific keyword scoring for stock_nse mode
+        if self._asset_type == "stock_nse":
+            risk_off_score += sum(1 for kw in _INDIA_RISK_OFF_KEYWORDS if kw in all_text)
+            risk_on_score += sum(1 for kw in _INDIA_RISK_ON_KEYWORDS if kw in all_text)
 
         # Fear & Greed index adds weight
         if fear_greed_score <= 20:

@@ -73,11 +73,16 @@ class StockSelector:
 
         self._watchlist: list[str] = []
         self._candidate_pool: list[str] = list(NIFTY50_SYMBOLS)
+        self._macro_analyst: Any = None
 
         logger.info(
             "StockSelector initialized (pool_size=%d, priority=%d)",
             len(self._candidate_pool), len(self._priority_symbols),
         )
+
+    def set_macro_analyst(self, macro_analyst: Any) -> None:
+        """Wire in the MacroAnalyst for AI-driven priority symbol updates."""
+        self._macro_analyst = macro_analyst
 
     def build_watchlist(self) -> list[str]:
         """Score and rank candidates to build today's watchlist.
@@ -90,11 +95,36 @@ class StockSelector:
         """
         scored: list[tuple[str, float]] = []
 
-        for symbol in self._candidate_pool:
+        # --- MacroAnalyst: apply AI-driven symbol overrides ---
+        # pairs_to_add -> add to priority list (sector tailwinds)
+        # avoid_pairs  -> temporarily remove from candidate pool
+        effective_pool = list(self._candidate_pool)
+        effective_priority = set(self._priority_symbols)
+        if self._macro_analyst is not None:
+            macro_ctx = self._macro_analyst.get_context()
+            if macro_ctx and macro_ctx.is_valid:
+                if macro_ctx.pairs_to_add:
+                    for sym in macro_ctx.pairs_to_add:
+                        if sym in self._candidate_pool:
+                            effective_priority.add(sym)
+                    logger.info(
+                        "MacroAnalyst: promoting %d symbol(s) to priority: %s",
+                        len(macro_ctx.pairs_to_add),
+                        ", ".join(macro_ctx.pairs_to_add),
+                    )
+                if macro_ctx.avoid_pairs:
+                    effective_pool = [s for s in effective_pool if s not in macro_ctx.avoid_pairs]
+                    logger.info(
+                        "MacroAnalyst: excluding %d symbol(s) from pool: %s",
+                        len(macro_ctx.avoid_pairs),
+                        ", ".join(macro_ctx.avoid_pairs),
+                    )
+
+        for symbol in effective_pool:
             score = self._score_symbol(symbol)
             if score > 0:
                 # Sector momentum: boost priority symbols (e.g. oil/gas during war)
-                if symbol in self._priority_symbols:
+                if symbol in effective_priority:
                     score += self._sector_momentum_boost
                 scored.append((symbol, score))
 
@@ -105,7 +135,7 @@ class StockSelector:
         # Ensure priority symbols are included if they pass basic filters
         # (even if they didn't score high enough for top N)
         watchlist_set = set(self._watchlist)
-        for symbol in self._priority_symbols:
+        for symbol in effective_priority:
             if symbol not in watchlist_set:
                 score = self._score_symbol(symbol)
                 if score > 0:  # Passes basic filters

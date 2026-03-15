@@ -195,6 +195,13 @@ class TradingScheduler:
             system.portfolio_manager, system.performance_monitor
         )
 
+        # Initial macro refresh at pre-market (non-blocking)
+        if hasattr(system, "macro_analyst") and system.macro_analyst is not None:
+            try:
+                system.macro_analyst.refresh()
+            except Exception:
+                logger.exception("Pre-market macro refresh failed — continuing")
+
         logger.info("Pre-market complete. Watchlist: %d symbols", len(watchlist))
 
     def _run_market_hours(self, system: Any) -> None:
@@ -243,6 +250,14 @@ class TradingScheduler:
 
         # Detect market regime
         system.regime_detector.detect_regime()
+
+        # Periodic macro refresh during market hours
+        if hasattr(system, "macro_analyst") and system.macro_analyst is not None:
+            if system.macro_analyst.should_refresh():
+                try:
+                    system.macro_analyst.refresh()
+                except Exception:
+                    logger.exception("Intraday macro refresh failed — keeping previous context")
 
         # Run strategies to generate signals
         signals = system.strategy_engine.run_strategies(watchlist)

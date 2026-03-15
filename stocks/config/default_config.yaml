@@ -116,6 +116,21 @@ vwap_reversion:
   max_hold_minutes: 60               # Quick reversion trades
   min_target_pct: 0.5                # Target must be > 0.5% to cover fees
 
+# --- Macro AI Analyst ---
+# Runs at pre-market + every refresh_minutes during market hours.
+# Reads Indian business news (Economic Times, Moneycontrol, Google News India)
+# and classifies macro mood for NSE equities.
+# Requires ai_analysis.llm_enabled: true + LLM_API_KEY for full LLM analysis;
+# falls back to keyword scoring otherwise.
+macro_analyst:
+  enabled: true
+  asset_type: stock_nse          # Uses Indian news sources + NSE-specific LLM prompt
+  refresh_minutes: 30            # Re-analyze every 30 min (also runs at pre-market)
+  max_ai_pairs: 5                # Max symbols AI can add to priority list per session
+  apply_mood_filter: true        # Block BUY signals in strong risk_off environment
+  apply_pair_bias: true          # Block signals conflicting with AI directional bias
+  # NEWS_API_KEY env var enables authenticated CryptoPanic (not needed for stocks)
+
 # --- AI Analysis ---
 ai_analysis:
   enabled: true
