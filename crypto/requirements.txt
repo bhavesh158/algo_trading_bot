@@ -8,7 +8,7 @@ pandas>=2.0
 numpy>=1.24
 
 # AI / LLM (optional — required when ai_analysis.llm_enabled=true)
-google-generativeai>=0.8   # Gemini (default provider)
+google-genai>=1.0          # Gemini (default provider, new SDK)
 openai>=1.0                # OpenAI alternative
 
 # Testing

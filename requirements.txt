@@ -19,7 +19,7 @@ smartapi-python>=1.5  # Angel One SmartAPI
 pyotp>=2.9            # TOTP for Angel One 2FA
 
 # AI / LLM (optional — required when ai_analysis.llm_enabled=true)
-google-generativeai>=0.8   # Gemini (default provider)
+google-genai>=1.0          # Gemini (default provider, new SDK)
 openai>=1.0                # OpenAI alternative
 
 # Testing

@@ -47,6 +47,10 @@ class LLMClient:
         self._provider = ai_cfg.get("llm_provider", os.environ.get("LLM_PROVIDER", "gemini"))
         self._cache_minutes = ai_cfg.get("llm_cache_minutes", 15)
         self._api_key = os.environ.get("LLM_API_KEY", "")
+        # Model name — override via LLM_MODEL env var or ai_analysis.llm_model config
+        self._gemini_model = ai_cfg.get(
+            "llm_model", os.environ.get("LLM_MODEL", "gemini-2.0-flash-001")
+        )
 
         # TTL cache: {cache_key: (timestamp, response)}
         self._cache: dict[str, tuple[float, dict[str, Any]]] = {}
@@ -180,18 +184,20 @@ class LLMClient:
             return {}
 
     def _call_gemini(self, prompt: str) -> dict[str, Any]:
-        """Call Gemini API (google-generativeai) with the fixed per-symbol system prompt."""
+        """Call Gemini API (google-genai) with the fixed per-symbol system prompt."""
         try:
-            import google.generativeai as genai
+            from google import genai
+            from google.genai import types
         except ImportError:
-            logger.warning("google-generativeai not installed — pip install google-generativeai")
+            logger.warning("google-genai not installed — pip install google-genai")
             return _NEUTRAL_RESPONSE.copy()
 
-        genai.configure(api_key=self._api_key)
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        response = model.generate_content(
-            f"{_SYSTEM_PROMPT}\n\n{prompt}",
-            generation_config=genai.GenerationConfig(
+        client = genai.Client(api_key=self._api_key)
+        response = client.models.generate_content(
+            model=self._gemini_model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=_SYSTEM_PROMPT,
                 response_mime_type="application/json",
                 temperature=0.3,
                 max_output_tokens=300,
@@ -204,16 +210,18 @@ class LLMClient:
     ) -> dict[str, Any]:
         """Call Gemini with fully custom prompts."""
         try:
-            import google.generativeai as genai
+            from google import genai
+            from google.genai import types
         except ImportError:
-            logger.warning("google-generativeai not installed — pip install google-generativeai")
+            logger.warning("google-genai not installed — pip install google-genai")
             return {}
 
-        genai.configure(api_key=self._api_key)
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        response = model.generate_content(
-            f"{system_prompt}\n\n{user_prompt}",
-            generation_config=genai.GenerationConfig(
+        client = genai.Client(api_key=self._api_key)
+        response = client.models.generate_content(
+            model=self._gemini_model,
+            contents=user_prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
                 response_mime_type="application/json",
                 temperature=0.2,
                 max_output_tokens=max_tokens,
