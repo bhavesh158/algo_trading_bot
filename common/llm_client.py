@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from typing import Any, Optional
 
@@ -183,6 +184,46 @@ class LLMClient:
             logger.exception("LLM call_raw failed (cache_key=%s)", cache_key)
             return {}
 
+    def _parse_response_text(self, response: object) -> str:
+        """Extract text from a Gemini response, handling thinking-model part structure.
+
+        Thinking models (gemini-2.5-*) may leave response.text as None when the
+        thinking budget occupies dedicated parts.  Fall back to iterating parts in
+        reverse so the last real-text part is returned.
+        """
+        text = getattr(response, "text", None)
+        if text:
+            return text
+        try:
+            for candidate in (getattr(response, "candidates", None) or []):
+                parts = getattr(getattr(candidate, "content", None), "parts", None) or []
+                for part in reversed(parts):
+                    t = getattr(part, "text", None)
+                    if t:
+                        return t
+        except Exception:
+            pass
+        return ""
+
+    def _extract_json(self, text: str) -> dict[str, Any]:
+        """Parse JSON from text, tolerating markdown fences and mixed thinking preamble."""
+        text = text.strip()
+        if not text:
+            raise ValueError("Empty response text from LLM")
+        # Strip markdown code fences (```json ... ``` or ``` ... ```)
+        if text.startswith("```"):
+            text = re.sub(r"^```[a-z]*\n?", "", text)
+            text = re.sub(r"\n?```\s*$", "", text.strip()).strip()
+        # Direct parse
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            # Extract first complete {...} block (handles thinking preamble leaking in)
+            match = re.search(r"\{.*\}", text, re.DOTALL)
+            if match:
+                return json.loads(match.group())
+            raise
+
     def _call_gemini(self, prompt: str) -> dict[str, Any]:
         """Call Gemini API (google-genai) with the fixed per-symbol system prompt."""
         try:
@@ -203,7 +244,7 @@ class LLMClient:
                 max_output_tokens=300,
             ),
         )
-        return json.loads(response.text)
+        return self._extract_json(self._parse_response_text(response))
 
     def _call_gemini_raw(
         self, system_prompt: str, user_prompt: str, max_tokens: int
@@ -227,7 +268,7 @@ class LLMClient:
                 max_output_tokens=max_tokens,
             ),
         )
-        return json.loads(response.text)
+        return self._extract_json(self._parse_response_text(response))
 
     def _call_openai(self, prompt: str) -> dict[str, Any]:
         """Call OpenAI API with the fixed per-symbol system prompt."""
