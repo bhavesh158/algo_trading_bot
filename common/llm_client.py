@@ -205,8 +205,16 @@ class LLMClient:
             pass
         return ""
 
+    @staticmethod
+    def _clean_json(text: str) -> str:
+        """Remove JS-style syntax that thinking models sometimes emit inside JSON."""
+        text = re.sub(r"//[^\n]*", "", text)               # // line comments
+        text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)  # /* block comments */
+        text = re.sub(r",(\s*[}\]])", r"\1", text)         # trailing commas
+        return text.strip()
+
     def _extract_json(self, text: str) -> dict[str, Any]:
-        """Parse JSON from text, tolerating markdown fences and mixed thinking preamble."""
+        """Parse JSON from text, tolerating markdown fences, JS comments, trailing commas."""
         text = text.strip()
         if not text:
             raise ValueError("Empty response text from LLM")
@@ -214,14 +222,14 @@ class LLMClient:
         if text.startswith("```"):
             text = re.sub(r"^```[a-z]*\n?", "", text)
             text = re.sub(r"\n?```\s*$", "", text.strip()).strip()
-        # Direct parse
+        # Direct parse after cleaning
         try:
-            return json.loads(text)
+            return json.loads(self._clean_json(text))
         except json.JSONDecodeError:
             # Extract first complete {...} block (handles thinking preamble leaking in)
             match = re.search(r"\{.*\}", text, re.DOTALL)
             if match:
-                return json.loads(match.group())
+                return json.loads(self._clean_json(match.group()))
             raise
 
     def _call_gemini(self, prompt: str) -> dict[str, Any]:
@@ -237,9 +245,9 @@ class LLMClient:
         response = client.models.generate_content(
             model=self._gemini_model,
             contents=prompt,
-            config=types.GenerateContentConfig(
+            config=self._gemini_json_config(
+                types,
                 system_instruction=_SYSTEM_PROMPT,
-                response_mime_type="application/json",
                 temperature=0.3,
                 max_output_tokens=300,
             ),
@@ -261,14 +269,29 @@ class LLMClient:
         response = client.models.generate_content(
             model=self._gemini_model,
             contents=user_prompt,
-            config=types.GenerateContentConfig(
+            config=self._gemini_json_config(
+                types,
                 system_instruction=system_prompt,
-                response_mime_type="application/json",
                 temperature=0.2,
                 max_output_tokens=max_tokens,
             ),
         )
         return self._extract_json(self._parse_response_text(response))
+
+    @staticmethod
+    def _gemini_json_config(types: object, **kwargs: Any) -> object:
+        """Build a GenerateContentConfig requesting JSON output with thinking disabled.
+
+        Disabling thinking (budget=0) prevents gemini-2.5-* from injecting reasoning
+        text or JS-style comments into the structured JSON output.
+        """
+        thinking_cfg = getattr(types, "ThinkingConfig", None)
+        if thinking_cfg is not None:
+            kwargs["thinking_config"] = thinking_cfg(thinking_budget=0)
+        return types.GenerateContentConfig(
+            response_mime_type="application/json",
+            **kwargs,
+        )
 
     def _call_openai(self, prompt: str) -> dict[str, Any]:
         """Call OpenAI API with the fixed per-symbol system prompt."""
