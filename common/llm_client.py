@@ -139,8 +139,48 @@ class LLMClient:
         lines.append("\nProvide your analysis as JSON.")
         return "\n".join(lines)
 
+    def call_raw(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        cache_key: Optional[str] = None,
+        max_tokens: int = 800,
+    ) -> dict[str, Any]:
+        """Call LLM with fully custom system/user prompts, returning raw JSON.
+
+        Unlike analyze_market_context(), no schema validation/clamping is applied.
+        The caller is responsible for parsing the response.
+        Returns {} when LLM is disabled or the call fails.
+        """
+        if not self._enabled:
+            return {}
+
+        if cache_key:
+            cached = self._cache.get(cache_key)
+            if cached:
+                ts, response = cached
+                if time.time() - ts < self._cache_minutes * 60:
+                    return response.copy()
+
+        try:
+            if self._provider == "gemini":
+                response = self._call_gemini_raw(system_prompt, user_prompt, max_tokens)
+            elif self._provider == "openai":
+                response = self._call_openai_raw(system_prompt, user_prompt, max_tokens)
+            else:
+                logger.warning("Unknown LLM provider: %s", self._provider)
+                return {}
+
+            if cache_key and response:
+                self._cache[cache_key] = (time.time(), response)
+
+            return response
+        except Exception:
+            logger.exception("LLM call_raw failed (cache_key=%s)", cache_key)
+            return {}
+
     def _call_gemini(self, prompt: str) -> dict[str, Any]:
-        """Call Gemini API (google-generativeai)."""
+        """Call Gemini API (google-generativeai) with the fixed per-symbol system prompt."""
         try:
             import google.generativeai as genai
         except ImportError:
@@ -159,8 +199,30 @@ class LLMClient:
         )
         return json.loads(response.text)
 
+    def _call_gemini_raw(
+        self, system_prompt: str, user_prompt: str, max_tokens: int
+    ) -> dict[str, Any]:
+        """Call Gemini with fully custom prompts."""
+        try:
+            import google.generativeai as genai
+        except ImportError:
+            logger.warning("google-generativeai not installed — pip install google-generativeai")
+            return {}
+
+        genai.configure(api_key=self._api_key)
+        model = genai.GenerativeModel("gemini-2.0-flash")
+        response = model.generate_content(
+            f"{system_prompt}\n\n{user_prompt}",
+            generation_config=genai.GenerationConfig(
+                response_mime_type="application/json",
+                temperature=0.2,
+                max_output_tokens=max_tokens,
+            ),
+        )
+        return json.loads(response.text)
+
     def _call_openai(self, prompt: str) -> dict[str, Any]:
-        """Call OpenAI API."""
+        """Call OpenAI API with the fixed per-symbol system prompt."""
         try:
             from openai import OpenAI
         except ImportError:
@@ -176,6 +238,29 @@ class LLMClient:
             ],
             temperature=0.3,
             max_tokens=300,
+            response_format={"type": "json_object"},
+        )
+        return json.loads(response.choices[0].message.content)
+
+    def _call_openai_raw(
+        self, system_prompt: str, user_prompt: str, max_tokens: int
+    ) -> dict[str, Any]:
+        """Call OpenAI with fully custom prompts."""
+        try:
+            from openai import OpenAI
+        except ImportError:
+            logger.warning("openai not installed — pip install openai")
+            return {}
+
+        client = OpenAI(api_key=self._api_key)
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.2,
+            max_tokens=max_tokens,
             response_format={"type": "json_object"},
         )
         return json.loads(response.choices[0].message.content)

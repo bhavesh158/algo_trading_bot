@@ -37,6 +37,7 @@ class ContinuousScheduler:
         self._last_pair_refresh = datetime.min.replace(tzinfo=timezone.utc)
         self._last_report = datetime.min.replace(tzinfo=timezone.utc)
         self._last_risk_reset = datetime.min.replace(tzinfo=timezone.utc)
+        self._last_macro_refresh = datetime.min.replace(tzinfo=timezone.utc)
         self._system = None
 
         # Anti-churn: cooldown after closing a position
@@ -126,6 +127,14 @@ class ContinuousScheduler:
             system.portfolio_manager, system.performance_monitor,
         )
 
+        # Initial macro refresh (non-blocking — failure falls back to neutral)
+        if hasattr(system, "macro_analyst") and system.macro_analyst is not None:
+            try:
+                system.macro_analyst.refresh()
+                self._last_macro_refresh = datetime.now(timezone.utc)
+            except Exception:
+                logger.exception("Initial macro refresh failed — continuing without macro context")
+
         now = datetime.now(timezone.utc)
         self._last_pair_refresh = now
         self._last_report = now
@@ -158,6 +167,19 @@ class ContinuousScheduler:
             logger.info("--- PERIODIC REPORT ---")
             self._system.report_generator.generate_report()
             self._last_report = now
+
+        # Macro refresh
+        if (
+            hasattr(self._system, "macro_analyst")
+            and self._system.macro_analyst is not None
+            and self._system.macro_analyst.should_refresh()
+        ):
+            logger.info("--- MACRO REFRESH ---")
+            try:
+                self._system.macro_analyst.refresh()
+                self._last_macro_refresh = now
+            except Exception:
+                logger.exception("Macro refresh failed — keeping previous context")
 
     def _run_trading_cycle(self) -> None:
         """One iteration of the trading loop."""

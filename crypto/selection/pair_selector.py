@@ -14,6 +14,8 @@ from crypto.data.providers.ccxt_provider import CcxtProvider
 
 logger = logging.getLogger(__name__)
 
+_SENTINEL = float("inf")
+
 
 class PairSelector:
     """Filters and ranks trading pairs based on liquidity and quality metrics."""
@@ -32,9 +34,17 @@ class PairSelector:
         liq = config.get("liquidity_protection", {})
         self._min_depth = liq.get("min_orderbook_depth_usdt", 50_000)
 
+        macro_cfg = config.get("macro_analyst", {})
+        self._max_ai_pairs: int = int(macro_cfg.get("max_ai_pairs", 3))
+
         self.active_pairs: list[str] = []
         self._protected_pairs: set[str] = set()  # pairs with open positions — never filtered out
+        self._macro_analyst: Any = None
         logger.info("PairSelector initialized (%d candidates)", len(self._candidates))
+
+    def set_macro_analyst(self, macro_analyst: Any) -> None:
+        """Wire in the MacroAnalyst for AI-driven pair injection."""
+        self._macro_analyst = macro_analyst
 
     def set_protected_pairs(self, symbols: set[str]) -> None:
         """Set pairs that must always be in the watchlist (have open positions)."""
@@ -82,6 +92,44 @@ class PairSelector:
             scored.append((pair, score))
 
         scored.sort(key=lambda x: x[1], reverse=True)
+
+        # --- MacroAnalyst pair injection ---
+        # AI-suggested pairs get a boosted score so they survive the top-N cut.
+        # They still need to pass a minimum volume check for safety.
+        if self._macro_analyst is not None:
+            macro_ctx = self._macro_analyst.get_context()
+            if macro_ctx and macro_ctx.is_valid and macro_ctx.pairs_to_add:
+                already_scored = {p for p, _ in scored}
+                candidate_set = set(self._candidates)
+                injected: list[str] = []
+                for ai_pair in macro_ctx.pairs_to_add[: self._max_ai_pairs]:
+                    if ai_pair in already_scored:
+                        continue  # already included via normal scoring
+                    if ai_pair not in candidate_set:
+                        logger.debug("MacroAnalyst suggested unknown pair %s — skipped", ai_pair)
+                        continue
+                    # Quick volume check (skip spread/depth for AI-injected pairs)
+                    ticker = self.provider.fetch_ticker(ai_pair)
+                    if not ticker or ticker.get("last", 0) <= 0:
+                        continue
+                    volume = ticker.get("quote_volume", 0)
+                    if volume < self._min_volume:
+                        logger.info(
+                            "MacroAnalyst pair %s skipped: volume %.0f < %.0f",
+                            ai_pair, volume, self._min_volume,
+                        )
+                        continue
+                    # Give it a very high score so it appears near the top
+                    scored.append((ai_pair, _SENTINEL - 1))
+                    injected.append(ai_pair)
+
+                if injected:
+                    logger.info(
+                        "MacroAnalyst injected %d pair(s) into watchlist: %s",
+                        len(injected), ", ".join(injected),
+                    )
+                    scored.sort(key=lambda x: x[1], reverse=True)
+
         self.active_pairs = [p for p, _ in scored[:self._max_pairs]]
 
         # Ensure protected pairs are always present even if max_pairs limit was hit

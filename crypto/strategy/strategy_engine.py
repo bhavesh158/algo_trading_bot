@@ -76,6 +76,13 @@ class StrategyEngine:
         self._btc_filter_tf = burst_cfg.get("btc_trend_timeframe", "1h")
         self._last_btc_filter_log: datetime | None = None
 
+        # --- Macro context (MacroAnalyst) ---
+        self._macro_analyst: Any = None
+        macro_cfg = config.get("macro_analyst", {})
+        self._macro_apply_mood_filter: bool = macro_cfg.get("apply_mood_filter", True)
+        self._macro_apply_pair_bias: bool = macro_cfg.get("apply_pair_bias", True)
+        self._last_macro_block_log: datetime | None = None
+
         logger.info("StrategyEngine initialized (threshold=%.2f, burst_max=%d/%ds, btc_filter=%s)",
                     self._confidence_threshold, self._max_signals_per_window,
                     self._burst_window_seconds, self._btc_filter_enabled)
@@ -83,6 +90,10 @@ class StrategyEngine:
     def set_market_data(self, market_data: MarketDataEngine) -> None:
         """Wire in the market data engine for BTC trend checking."""
         self._market_data = market_data
+
+    def set_macro_analyst(self, macro_analyst: Any) -> None:
+        """Wire in the MacroAnalyst for macro-driven signal gating."""
+        self._macro_analyst = macro_analyst
 
     def set_open_positions_ref(self, positions_ref: dict) -> None:
         """Wire in live open positions dict for same-direction correlation check."""
@@ -207,6 +218,57 @@ class StrategyEngine:
                             continue
                     if name == "trend_following" and regime in _REGIME_BLOCK_TF:
                         continue
+
+                    # Macro context gates (mood filter, avoid list, directional bias)
+                    # Applied AFTER regime filter, BEFORE BTC filter.
+                    # Always fails-open: if no valid context, no signals are blocked.
+                    if self._macro_analyst is not None:
+                        macro_ctx = self._macro_analyst.get_context()
+                        if macro_ctx and macro_ctx.is_valid:
+                            # Gate 1: risk_off mood blocks all new BUY entries
+                            if (
+                                self._macro_apply_mood_filter
+                                and signal.side == OrderSide.BUY
+                                and macro_ctx.blocks_buys
+                            ):
+                                now_log = datetime.now(timezone.utc)
+                                if (
+                                    self._last_macro_block_log is None
+                                    or (now_log - self._last_macro_block_log).total_seconds() >= 1800
+                                ):
+                                    logger.info(
+                                        "MACRO BLOCKED BUY: mood=%s(%.2f) themes=%s — "
+                                        "F&G=%d(%s)",
+                                        macro_ctx.market_mood, macro_ctx.mood_confidence,
+                                        ", ".join(macro_ctx.active_themes) or "none",
+                                        macro_ctx.fear_greed_score, macro_ctx.fear_greed_label,
+                                    )
+                                    self._last_macro_block_log = now_log
+                                continue
+
+                            # Gate 2: hard-block pairs on the avoid list
+                            if macro_ctx.should_avoid(symbol):
+                                logger.debug(
+                                    "MACRO AVOID: %s is on avoid list — signal blocked",
+                                    symbol,
+                                )
+                                continue
+
+                            # Gate 3: directional bias mismatch
+                            if self._macro_apply_pair_bias:
+                                bias = macro_ctx.get_pair_bias(symbol)
+                                if signal.side == OrderSide.BUY and bias == "SELL":
+                                    logger.debug(
+                                        "MACRO BIAS BLOCKED: %s BUY — AI bias is SELL",
+                                        symbol,
+                                    )
+                                    continue
+                                if signal.side == OrderSide.SELL and bias == "BUY":
+                                    logger.debug(
+                                        "MACRO BIAS BLOCKED: %s SELL — AI bias is BUY",
+                                        symbol,
+                                    )
+                                    continue
 
                     # BTC market direction filter: block BUY signals when BTC is downtrending
                     # Requires BOTH EMA9>EMA21 AND price>EMA21 to filter lagging EMA crosses

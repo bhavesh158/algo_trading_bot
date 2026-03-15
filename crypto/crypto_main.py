@@ -68,6 +68,7 @@ class CryptoTradingSystem:
         from crypto.reporting.report_generator import ReportGenerator
         from crypto.reporting.alert_manager import AlertManager
         from crypto.reporting.trade_journal import TradeJournal
+        from common.macro_analyst import MacroAnalyst
 
         # Connect to exchange data provider
         exchange_name = get_nested(self.config, "exchange", "name") or "binance"
@@ -105,6 +106,7 @@ class CryptoTradingSystem:
         self.report_generator = ReportGenerator(self.config, self.event_bus)
         self.trade_journal = TradeJournal(self.config)
         self.scheduler = ContinuousScheduler(self.config, self.event_bus)
+        self.macro_analyst = MacroAnalyst(self.config)
 
         # Wire exchange adapter for live mode
         if self.mode == TradingMode.LIVE:
@@ -117,6 +119,10 @@ class CryptoTradingSystem:
 
         # Wire market data into strategy engine for BTC trend filter
         self.strategy_engine.set_market_data(self.market_data_engine)
+
+        # Wire MacroAnalyst into strategy engine and pair selector
+        self.strategy_engine.set_macro_analyst(self.macro_analyst)
+        self.pair_selector.set_macro_analyst(self.macro_analyst)
 
         self.scheduler.set_trading_system(self)
 

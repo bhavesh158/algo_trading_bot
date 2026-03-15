@@ -134,6 +134,18 @@ breakout_momentum:
   trailing_stop_atr_multiplier: 1.5
   max_hold_minutes: 480            # 8 hours max
 
+# --- Macro AI Analyst ---
+# Runs every `refresh_minutes` to scan news + Fear&Greed and produce a MacroContext.
+# Requires `ai_analysis.llm_enabled: true` and LLM_API_KEY for full LLM analysis;
+# falls back to keyword-based mood scoring if LLM is unavailable.
+macro_analyst:
+  enabled: true
+  refresh_minutes: 30          # How often to fetch news and re-analyze
+  max_ai_pairs: 3              # Max extra pairs AI can inject into watchlist per cycle
+  apply_mood_filter: true      # Block ALL BUY signals when mood=risk_off (conf >= 0.70)
+  apply_pair_bias: true        # Block signals that conflict with AI directional bias
+  # NEWS_API_KEY env var enables authenticated CryptoPanic (optional — public works too)
+
 # --- AI Analysis ---
 ai_analysis:
   enabled: true
