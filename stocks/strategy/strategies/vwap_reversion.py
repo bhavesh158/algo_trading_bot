@@ -204,14 +204,18 @@ class VWAPReversionStrategy(BaseStrategy):
         if vwap_val is None:
             return False
 
-        # For BUY: exit when price reaches or exceeds VWAP
-        if current_price >= entry_price:  # Long position in profit
-            if current_price >= vwap_val:
-                return True
-
-        # For SELL: exit when price drops to or below VWAP
-        if current_price <= entry_price:  # Short position in profit
-            if current_price <= vwap_val:
-                return True
-
-        return False
+        # Determine position direction from the entry price relative to VWAP.
+        # VWAP-reversion BUYs are entered when price < VWAP (negative deviation);
+        # SELLs are entered when price > VWAP (positive deviation).
+        # Using entry_price vs vwap_val is reliable here because VWAP barely moves
+        # between entry and the first few exit checks.
+        #
+        # The previous implementation used current_price >= entry_price to detect a
+        # "long in profit" but that condition is always true at the moment of entry
+        # (current == entry), so SELL positions were immediately exited.
+        if entry_price < vwap_val:
+            # BUY position: exit when price has risen back to VWAP
+            return current_price >= vwap_val
+        else:
+            # SELL position: exit when price has fallen back to VWAP
+            return current_price <= vwap_val

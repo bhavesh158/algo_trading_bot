@@ -19,6 +19,7 @@ from stocks.core.enums import OrderSide, OrderType, TradingPhase
 from stocks.core.event_bus import EventBus
 from stocks.core.events import ScheduleEvent
 from stocks.core.models import Order
+from datetime import timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,10 @@ class TradingScheduler:
         self._max_entries_per_cycle = sched_config.get("max_entries_per_cycle", 1)
         self._min_expected_profit_pct = sched_config.get("min_expected_profit_pct", 0.5)
         self._max_open_positions = config.get("risk", {}).get("max_open_positions", 3)
+
+        # Post-close cooldown: prevent re-entering a symbol for N minutes after close
+        self._cooldown_minutes = sched_config.get("trade_cooldown_minutes", 15)
+        self._symbol_cooldown: dict[str, datetime] = {}  # symbol -> cooldown_end
 
         logger.info("TradingScheduler initialized (open=%s, close=%s)",
                      self._market_open.strftime("%H:%M"), self._market_close.strftime("%H:%M"))
@@ -305,6 +310,18 @@ class TradingScheduler:
                         )
                         continue
 
+            # Skip if symbol is in post-close cooldown
+            cooldown_end = self._symbol_cooldown.get(signal.symbol)
+            if cooldown_end is not None:
+                if datetime.now() < cooldown_end:
+                    logger.debug(
+                        "Signal suppressed (cooldown): %s until %s",
+                        signal.symbol, cooldown_end.strftime("%H:%M:%S"),
+                    )
+                    continue
+                else:
+                    del self._symbol_cooldown[signal.symbol]
+
             # Skip if already have a position in this symbol
             if signal.symbol in system.portfolio_manager.get_open_position_symbols():
                 continue
@@ -369,6 +386,13 @@ class TradingScheduler:
                     system.trade_journal.log_close(trade)
                     system.performance_monitor.record_trade(trade)
                     system.order_executor.release_symbol(symbol)
+                    # Apply cooldown: prevent re-entering this symbol for N minutes
+                    self._symbol_cooldown[symbol] = datetime.now() + timedelta(
+                        minutes=self._cooldown_minutes
+                    )
+                    logger.debug(
+                        "Cooldown set for %s: %d min", symbol, self._cooldown_minutes
+                    )
 
         # Evaluate strategy performance periodically
         underperforming = system.performance_monitor.evaluate_strategies()
