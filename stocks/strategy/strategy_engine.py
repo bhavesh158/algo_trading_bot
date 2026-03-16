@@ -180,7 +180,7 @@ class StrategyEngine:
                 macro_ctx = self._macro_analyst.get_context()
                 if macro_ctx and macro_ctx.is_valid:
                     from datetime import datetime, timezone
-                    # Gate 1: risk_off mood blocks all new BUY entries
+                    # Gate 1a: strong risk_off (≥0.85) — hard-block all BUYs
                     if (
                         self._macro_apply_mood_filter
                         and getattr(signal, "side", None) == OrderSide.BUY
@@ -198,6 +198,21 @@ class StrategyEngine:
                             )
                             self._last_macro_block_log = now_log
                         continue
+
+                    # Gate 1b: moderate risk_off (0.70–0.84) — confidence penalty
+                    if (
+                        self._macro_apply_mood_filter
+                        and getattr(signal, "side", None) == OrderSide.BUY
+                    ):
+                        penalty = macro_ctx.buy_confidence_penalty
+                        if penalty > 0:
+                            signal.confidence = max(0.0, signal.confidence - penalty)
+                            logger.debug(
+                                "MACRO PENALTY: %s BUY conf −%.2f → %.2f "
+                                "(mood=%s %.2f)",
+                                signal.symbol, penalty, signal.confidence,
+                                macro_ctx.market_mood, macro_ctx.mood_confidence,
+                            )
 
                     # Gate 2: hard-block symbols on the avoid list
                     if macro_ctx.should_avoid(signal.symbol):

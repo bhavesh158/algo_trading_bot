@@ -154,8 +154,28 @@ class MacroContext:
 
     @property
     def blocks_buys(self) -> bool:
-        """Strong risk-off with high confidence: block all new BUY entries."""
-        return self.market_mood == "risk_off" and self.mood_confidence >= 0.70
+        """Hard-block all new BUY entries only in strong risk-off (≥0.85 confidence).
+
+        Below this threshold the system applies a confidence penalty instead
+        (see buy_confidence_penalty), so the AI qualifies trades rather than
+        vetoing the entire market.
+        """
+        return self.market_mood == "risk_off" and self.mood_confidence >= 0.85
+
+    @property
+    def buy_confidence_penalty(self) -> float:
+        """Confidence reduction to apply to BUY signals in *mild* risk-off.
+
+        Returns 0.15 when mood is risk_off and confidence is in [0.70, 0.85).
+        Returns 0.0 otherwise (neutral/risk_on, or strong risk_off uses blocks_buys).
+        Strong VWAP/breakout signals (confidence ≥ 0.75) survive the penalty;
+        marginal signals (< 0.75) are filtered out by the confidence threshold.
+        """
+        if self.market_mood != "risk_off" or self.blocks_buys:
+            return 0.0
+        if self.mood_confidence >= 0.70:
+            return 0.15
+        return 0.0
 
     def get_pair_bias(self, symbol: str) -> str:
         """Return directional bias for a pair ('NEUTRAL' if not found)."""

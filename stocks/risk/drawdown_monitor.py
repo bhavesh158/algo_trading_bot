@@ -10,6 +10,7 @@ Monitors account drawdown and takes protective actions:
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, TYPE_CHECKING
 
 from stocks.core.enums import AlertSeverity
@@ -44,6 +45,8 @@ class DrawdownMonitor:
 
         self._is_paused = False
         self._is_size_reduced = False
+        self._last_warning_log: float = 0.0  # Unix timestamp of last warning log
+        self._warning_log_interval = 300  # seconds — log at most once per 5 min
 
         logger.info(
             "DrawdownMonitor initialized (warn=%.1f%%, reduce=%.1f%%, pause=%.1f%%)",
@@ -103,7 +106,10 @@ class DrawdownMonitor:
             return "reduce_size"
 
         elif drawdown_pct >= self._warning_pct:
-            logger.info("Drawdown warning: %.1f%%", drawdown_pct)
+            now = time.time()
+            if now - self._last_warning_log >= self._warning_log_interval:
+                logger.info("Drawdown warning: %.1f%%", drawdown_pct)
+                self._last_warning_log = now
             return "warning"
 
         else:
