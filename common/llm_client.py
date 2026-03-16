@@ -261,21 +261,30 @@ class LLMClient:
         try:
             from google import genai
             from google.genai import types
+            from google.genai.errors import ServerError
         except ImportError:
             logger.warning("google-genai not installed — pip install google-genai")
             return {}
 
         client = genai.Client(api_key=self._api_key)
-        response = client.models.generate_content(
-            model=self._gemini_model,
-            contents=user_prompt,
-            config=self._gemini_json_config(
-                types,
-                system_instruction=system_prompt,
-                temperature=0.2,
-                max_output_tokens=max_tokens,
-            ),
-        )
+        try:
+            response = client.models.generate_content(
+                model=self._gemini_model,
+                contents=user_prompt,
+                config=self._gemini_json_config(
+                    types,
+                    system_instruction=system_prompt,
+                    temperature=0.2,
+                    max_output_tokens=max_tokens,
+                ),
+            )
+        except ServerError as exc:
+            if getattr(exc, "status_code", 0) == 503:
+                logger.warning(
+                    "Gemini API temporarily unavailable (503 — high demand): %s", exc
+                )
+                return {}
+            raise
         return self._extract_json(self._parse_response_text(response))
 
     @staticmethod

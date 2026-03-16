@@ -372,8 +372,33 @@ class TradingScheduler:
                     "position": pos,  # Pass full Position for trailing/time exits
                 }},
             )
-            for exit_sig in exit_signals:
+        for exit_sig in exit_signals:
                 exit_comm = system.order_executor.commission
+                exit_reason = exit_sig.metadata.get("exit_reason", "strategy")
+
+                # Commission-aware holdback: if the strategy-target exit would net a
+                # loss after round-trip fees, hold a bit longer so price can run past
+                # the target. Always exit on time / deep-red / non-target exits.
+                if exit_reason == "strategy" and exit_comm > 0:
+                    round_trip_comm = exit_comm * 2
+                    gross_pnl = pos.unrealized_pnl  # direction-aware
+                    if gross_pnl < round_trip_comm:
+                        # Hard bail-out: position has gone well into the red
+                        deeply_negative = gross_pnl < -round_trip_comm
+                        # Bail-out: nearly expired (>80% of max hold elapsed)
+                        near_expiry = (
+                            pos.max_hold_minutes > 0
+                            and pos.hold_duration_minutes >= pos.max_hold_minutes * 0.80
+                        )
+                        if not deeply_negative and not near_expiry:
+                            logger.debug(
+                                "Holding %s — gross %.2f < round-trip comm %.2f "
+                                "(held %.0f/%.0f min)",
+                                symbol, gross_pnl, round_trip_comm,
+                                pos.hold_duration_minutes, pos.max_hold_minutes or 0,
+                            )
+                            continue
+
                 trade = system.portfolio_manager.close_position(
                     symbol, current_price, exit_comm
                 )
