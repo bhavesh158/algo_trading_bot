@@ -453,18 +453,20 @@ Respond with JSON matching this exact schema:
 }}
 
 Rules:
+- pair_recommendations: max 8 entries — only pairs with a CLEAR macro catalyst; omit if neutral
 - pairs_to_add: max {self._max_ai_pairs}; must use SYMBOL/USDT format from available pairs above
 - avoid_pairs: pairs to completely block this cycle (e.g. pair of a hacked protocol)
 - mood = risk_off if: geopolitical escalation, major hack/exploit, regulatory crackdown, panic sell-off
 - mood = risk_on  if: institutional inflows, ETF approvals, major partnerships, positive regulatory news
 - mood = neutral  if: mixed signals or low-significance headlines
-- Only recommend directional biases / new pairs when there is a clear macro catalyst"""
+- Only recommend directional biases / new pairs when there is a clear macro catalyst
+- Be concise: reasoning must be ≤1 sentence; pair reason must be ≤10 words"""
 
         raw = self._llm_client.call_raw(
             system_prompt=_MACRO_SYSTEM_PROMPT_CRYPTO,
             user_prompt=user_prompt,
             cache_key="macro_context",
-            max_tokens=900,
+            max_tokens=1500,
         )
 
         if not raw:
@@ -511,6 +513,7 @@ Respond with JSON matching this exact schema:
 }}
 
 Rules:
+- pair_recommendations: max 8 entries — only stocks with a CLEAR macro catalyst; omit if neutral
 - pairs_to_add: max {self._max_ai_pairs}; symbols with strong macro tailwinds this session
 - avoid_pairs: stocks to skip today (sector headwind, regulatory risk, etc.)
 - mood = risk_off if: FII outflows, rupee weakness, global risk-off, RBI tightening, geopolitical risk
@@ -518,13 +521,14 @@ Rules:
 - mood = neutral  if: mixed signals
 - Key sector sensitivities: oil price up → ONGC/BPCL/IOC/GAIL BUY; FII selling → Banks SELL;
   USD strength → IT (INFY/TCS) tailwind; RBI rate cut → Banks/NBFCs BUY
-- Only recommend when there is a clear macro catalyst from today's headlines"""
+- Only recommend when there is a clear macro catalyst from today's headlines
+- Be concise: reasoning must be ≤1 sentence; pair reason must be ≤10 words"""
 
         raw = self._llm_client.call_raw(
             system_prompt=_MACRO_SYSTEM_PROMPT_STOCK_NSE,
             user_prompt=user_prompt,
             cache_key="macro_context_stocks",
-            max_tokens=900,
+            max_tokens=1500,
         )
 
         if not raw:
