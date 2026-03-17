@@ -372,7 +372,7 @@ class TradingScheduler:
                     "position": pos,  # Pass full Position for trailing/time exits
                 }},
             )
-        for exit_sig in exit_signals:
+            for exit_sig in exit_signals:
                 exit_comm = system.order_executor.commission
                 exit_reason = exit_sig.metadata.get("exit_reason", "strategy")
 
