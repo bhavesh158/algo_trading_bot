@@ -347,7 +347,9 @@ class TradingScheduler:
             if filled_order.status.name == "FILLED":
                 entry_comm = system.order_executor.commission
                 pos = system.portfolio_manager.open_position(filled_order, entry_commission=entry_comm)
-                # Set max hold duration from signal metadata
+                # Propagate target_price and max hold from signal to position
+                if signal.target_price > 0:
+                    pos.target_price = signal.target_price
                 max_hold = signal.metadata.get("max_hold_minutes", 0)
                 if max_hold > 0:
                     pos.max_hold_minutes = max_hold

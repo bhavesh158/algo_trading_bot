@@ -72,8 +72,7 @@ class PositionSizer:
         # Scale by confidence
         quantity *= signal.confidence
 
-        # Apply drawdown factor
-        quantity *= self._drawdown_factor
+        # Note: drawdown_factor already applied in risk_budget above — do NOT apply again.
 
         return max(quantity, 0.0)
 

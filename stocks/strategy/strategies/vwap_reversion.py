@@ -266,7 +266,7 @@ class VWAPReversionStrategy(BaseStrategy):
             in_momentum = (
                 position is not None
                 and self._trail_activate_pct > 0
-                and abs(position.unrealized_pnl_pct) >= self._trail_activate_pct
+                and position.unrealized_pnl_pct >= self._trail_activate_pct  # must be positive profit
             )
 
             if in_momentum:
