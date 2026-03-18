@@ -216,6 +216,10 @@ class StrategyEngine:
                         else self._confidence_threshold
                     )
                     if signal.confidence < threshold:
+                        logger.debug(
+                            "CONF FILTERED: %s %s conf=%.2f < threshold=%.2f (by %s)",
+                            signal.side.name, symbol, signal.confidence, threshold, name,
+                        )
                         continue
 
                     # Regime filter

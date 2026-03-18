@@ -85,7 +85,7 @@ strategies:
     - mean_reversion
     - breakout_momentum
   default_confidence_threshold: 0.55   # was 0.6 — strategies rarely exceeded 0.60
-  sell_confidence_threshold: 0.75      # Higher bar for shorts — shorting crypto is riskier than going long
+  sell_confidence_threshold: 0.65      # Higher bar for shorts than longs (0.55); BTC filter already blocks shorting uptrends
   # Signal burst limiter — prevents correlated batch entries
   signal_burst_window_seconds: 600      # 10 min rolling window
   max_signals_per_window: 5             # Max signals in the window (was 3)
