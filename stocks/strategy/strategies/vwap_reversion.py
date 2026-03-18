@@ -20,7 +20,7 @@ from typing import Any, Optional
 import numpy as np
 
 from stocks.core.enums import OrderSide, SignalStrength, Timeframe
-from stocks.core.models import Signal
+from stocks.core.models import Position, Signal
 from stocks.data.market_data_engine import MarketDataEngine
 from stocks.strategy.base_strategy import BaseStrategy
 
@@ -41,8 +41,13 @@ class VWAPReversionStrategy(BaseStrategy):
         self._min_target_pct = strat_config.get("min_target_pct", 0.5)
         self.primary_timeframe = Timeframe.M5
 
-        # Time exit from base class
-        self._max_hold_minutes = strat_config.get("max_hold_minutes", 60)
+        # Trailing stop with activation threshold (base class uses _trailing_stop_pct)
+        # Activate once unrealized profit ≥ trail_activate_pct%; then trail at trailing_stop_pct%
+        self._trail_activate_pct: float = strat_config.get("trail_activate_pct", 0.5)
+        self._trailing_stop_pct: float = strat_config.get("trailing_stop_pct", 0.3)
+
+        # Time exit: safety net only — extended to 4 hours so momentum trades can run
+        self._max_hold_minutes = strat_config.get("max_hold_minutes", 240)
 
     def _get_vwap(self, symbol: str) -> Optional[float]:
         """Get current VWAP value."""
@@ -197,6 +202,12 @@ class VWAPReversionStrategy(BaseStrategy):
         return None
 
     def should_exit(self, symbol: str, entry_price: float, current_price: float) -> bool:
+        """VWAP-touch exit for Phase 1 (small reversion).
+
+        Returns True when price has returned to VWAP. The commission holdback in
+        the scheduler prevents closing when gross < round-trip fees.
+        Note: in Phase 2 (momentum mode), get_exit_signal bypasses this method.
+        """
         if not self._exit_at_vwap:
             return False
 
@@ -204,18 +215,98 @@ class VWAPReversionStrategy(BaseStrategy):
         if vwap_val is None:
             return False
 
-        # Determine position direction from the entry price relative to VWAP.
-        # VWAP-reversion BUYs are entered when price < VWAP (negative deviation);
-        # SELLs are entered when price > VWAP (positive deviation).
-        # Using entry_price vs vwap_val is reliable here because VWAP barely moves
-        # between entry and the first few exit checks.
-        #
-        # The previous implementation used current_price >= entry_price to detect a
-        # "long in profit" but that condition is always true at the moment of entry
-        # (current == entry), so SELL positions were immediately exited.
         if entry_price < vwap_val:
             # BUY position: exit when price has risen back to VWAP
             return current_price >= vwap_val
         else:
             # SELL position: exit when price has fallen back to VWAP
             return current_price <= vwap_val
+
+    def get_exit_signal(
+        self,
+        symbol: str,
+        entry_price: float,
+        current_price: float,
+        position: Optional[Position] = None,
+    ) -> Optional[Signal]:
+        """Three-phase exit for VWAP reversion.
+
+        Phase 1 — Hard stop-loss (always fires, highest priority):
+            If price has moved past the stop-loss level set at entry, exit
+            immediately regardless of how long the position has been open.
+
+        Phase 2 — Momentum vs. reversion:
+            a) Momentum mode (unrealized profit ≥ trail_activate_pct):
+               Skip the VWAP-touch exit. A trailing stop at `trailing_stop_pct`%
+               from the peak now manages the position. The trade keeps running
+               as long as momentum holds; exits only when price pulls back from
+               its high (or low for a short).
+            b) Reversion mode (profit < trail_activate_pct):
+               Exit when price returns to VWAP (should_exit). The commission
+               holdback in the scheduler then defers if gross < round-trip fees.
+
+        Phase 3 — Time exit (safety net only):
+            Extended to 240 min (configurable) so it only fires if neither
+            stop-loss nor trailing stop nor VWAP-touch exited the position.
+        """
+        should_close = False
+        exit_reason = "strategy"
+
+        # --- Phase 1: hard stop-loss ---
+        if position is not None and self.check_stop_loss(position):
+            should_close = True
+            exit_reason = "stop_loss"
+            logger.info(
+                "[vwap_reversion] Stop-loss hit: %s price=%.2f stop=%.2f",
+                symbol, current_price, position.stop_loss,
+            )
+
+        # --- Phase 2: momentum vs. reversion ---
+        if not should_close:
+            in_momentum = (
+                position is not None
+                and self._trail_activate_pct > 0
+                and abs(position.unrealized_pnl_pct) >= self._trail_activate_pct
+            )
+
+            if in_momentum:
+                # Momentum mode: trailing stop manages the exit
+                if self.check_trailing_stop_pct(position):
+                    should_close = True
+                    exit_reason = "trailing_stop"
+                    logger.info(
+                        "[vwap_reversion] Trailing stop: %s price=%.2f peak=%.2f trail=%.1f%%",
+                        symbol, current_price,
+                        position.highest_since_entry if position.side == OrderSide.BUY
+                        else position.lowest_since_entry,
+                        self._trailing_stop_pct,
+                    )
+                # (else: still in momentum, hold — do NOT exit at VWAP touch)
+            else:
+                # Reversion mode: exit at VWAP touch (holdback handles commission check)
+                if self.should_exit(symbol, entry_price, current_price):
+                    should_close = True
+                    exit_reason = "strategy"
+
+        # --- Phase 3: time exit (safety net) ---
+        if not should_close and position is not None:
+            if self.check_time_exit(position):
+                should_close = True
+                exit_reason = "time_exit"
+                logger.info(
+                    "[vwap_reversion] Time exit: %s held %.0f min",
+                    symbol, position.hold_duration_minutes,
+                )
+
+        if not should_close:
+            return None
+
+        return Signal(
+            strategy_id=self.strategy_id,
+            symbol=symbol,
+            side=OrderSide.SELL,
+            strength=SignalStrength.MODERATE,
+            confidence=0.7,
+            entry_price=current_price,
+            metadata={"exit_reason": exit_reason},
+        )

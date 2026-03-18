@@ -32,6 +32,8 @@ class BaseStrategy(ABC):
 
         # Trailing stop (subclasses set > 0 to enable)
         self._trailing_stop_atr: float = 0.0
+        # Percentage-based trailing stop (subclasses set > 0 to enable)
+        self._trailing_stop_pct: float = 0.0
         # Max hold duration (subclasses set > 0 to enable)
         self._max_hold_minutes: int = 0
 
@@ -47,6 +49,48 @@ class BaseStrategy(ABC):
     def should_exit(self, symbol: str, entry_price: float, current_price: float) -> bool:
         """Determine whether an open position should be exited."""
         ...
+
+    def check_stop_loss(self, position: Position) -> bool:
+        """Check if the hard stop-loss price has been breached.
+
+        Uses the stop_loss price stored on the Position at entry time.
+        This fires for all strategies — stop-losses should always be respected.
+        """
+        if position.stop_loss <= 0:
+            return False
+        from stocks.core.enums import OrderSide
+        if position.side == OrderSide.BUY:
+            return position.current_price <= position.stop_loss
+        else:
+            return position.current_price >= position.stop_loss
+
+    def check_trailing_stop_pct(self, position: Position) -> bool:
+        """Percentage-based trailing stop: exit when price drops `_trailing_stop_pct`%
+        from the peak (or rises that % from the trough for short positions).
+
+        Requires `_trailing_stop_pct > 0`. A position must already have moved in
+        our favour (highest_since_entry > entry for BUY, etc.) for this to fire.
+        """
+        if self._trailing_stop_pct <= 0:
+            return False
+        from stocks.core.enums import OrderSide
+        trail = self._trailing_stop_pct / 100
+        if position.side == OrderSide.BUY:
+            if position.highest_since_entry <= 0:
+                return False
+            trail_stop = position.highest_since_entry * (1 - trail)
+            return (
+                position.current_price <= trail_stop
+                and position.current_price < position.highest_since_entry
+            )
+        else:
+            if position.lowest_since_entry <= 0:
+                return False
+            trail_stop = position.lowest_since_entry * (1 + trail)
+            return (
+                position.current_price >= trail_stop
+                and position.current_price > position.lowest_since_entry
+            )
 
     def check_trailing_stop(self, symbol: str, position: Position) -> bool:
         """Check if the trailing stop has been hit.
@@ -104,18 +148,38 @@ class BaseStrategy(ABC):
     ) -> Optional[Signal]:
         """Generate an exit signal if exit conditions are met.
 
-        Checks: strategy-specific exit, trailing stop, and time-based exit.
+        Checks (in priority order):
+        1. Hard stop-loss
+        2. Strategy-specific exit (should_exit)
+        3. ATR-based trailing stop
+        4. Percentage-based trailing stop
+        5. Time-based exit
         """
-        should_close = self.should_exit(symbol, entry_price, current_price)
+        should_close = False
         exit_reason = "strategy"
 
-        # Check trailing stop
+        # 1. Hard stop-loss — highest priority, always fires
+        if position is not None and self.check_stop_loss(position):
+            should_close = True
+            exit_reason = "stop_loss"
+
+        # 2. Strategy-specific exit (e.g. VWAP touch, target hit)
+        if not should_close:
+            should_close = self.should_exit(symbol, entry_price, current_price)
+
+        # 3. ATR-based trailing stop
         if not should_close and position is not None:
             if self.check_trailing_stop(symbol, position):
                 should_close = True
                 exit_reason = "trailing_stop"
 
-        # Check time-based exit
+        # 4. Percentage-based trailing stop
+        if not should_close and position is not None:
+            if self.check_trailing_stop_pct(position):
+                should_close = True
+                exit_reason = "trailing_stop"
+
+        # 5. Time-based exit
         if not should_close and position is not None:
             if self.check_time_exit(position):
                 should_close = True
