@@ -57,6 +57,10 @@ class StrategyEngine:
         self._confidence_threshold = config.get("strategies", {}).get(
             "default_confidence_threshold", 0.6
         )
+        # Shorting crypto is inherently riskier — require higher confidence for SELL signals.
+        self._sell_confidence_threshold = config.get("strategies", {}).get(
+            "sell_confidence_threshold", 0.75
+        )
         # Signal spam suppression: track last signal time per (symbol, side, strategy)
         self._last_signal_log: dict[tuple[str, str, str], datetime] = {}
         self._signal_log_interval = 300  # seconds between repeated signal logs
@@ -205,8 +209,13 @@ class StrategyEngine:
                     if self.ai_analysis:
                         signal = self.ai_analysis.adjust_confidence(signal)
 
-                    # Confidence filter
-                    if signal.confidence < self._confidence_threshold:
+                    # Confidence filter — higher bar for SELL (shorting is riskier)
+                    threshold = (
+                        self._sell_confidence_threshold
+                        if signal.side == OrderSide.SELL
+                        else self._confidence_threshold
+                    )
+                    if signal.confidence < threshold:
                         continue
 
                     # Regime filter
@@ -284,21 +293,33 @@ class StrategyEngine:
                                     )
                                     continue
 
-                    # BTC market direction filter: block BUY signals when BTC is downtrending
-                    # Requires BOTH EMA9>EMA21 AND price>EMA21 to filter lagging EMA crosses
-                    if signal.side == OrderSide.BUY:
-                        btc_bullish = self._btc_market_bullish()
-                        if btc_bullish is False:
-                            now_log = datetime.now(timezone.utc)
-                            if (self._last_btc_filter_log is None or
-                                    (now_log - self._last_btc_filter_log).total_seconds()
-                                    >= _BTC_FILTER_LOG_INTERVAL):
-                                logger.info(
-                                    "BTC FILTER: %s bearish — blocking BUY signals",
-                                    self._btc_filter_symbol,
-                                )
-                                self._last_btc_filter_log = now_log
-                            continue
+                    # BTC market direction filter (symmetric):
+                    #   BTC bearish  → block BUY  (don’t buy into a downtrend)
+                    #   BTC bullish  → block SELL (don’t short into an uptrend)
+                    # Requires BOTH EMA9>EMA21 AND price>EMA21 to avoid lagging-EMA false signals.
+                    btc_bullish = self._btc_market_bullish()
+                    if signal.side == OrderSide.BUY and btc_bullish is False:
+                        now_log = datetime.now(timezone.utc)
+                        if (self._last_btc_filter_log is None or
+                                (now_log - self._last_btc_filter_log).total_seconds()
+                                >= _BTC_FILTER_LOG_INTERVAL):
+                            logger.info(
+                                "BTC FILTER: %s bearish — blocking BUY signals",
+                                self._btc_filter_symbol,
+                            )
+                            self._last_btc_filter_log = now_log
+                        continue
+                    if signal.side == OrderSide.SELL and btc_bullish is True:
+                        now_log = datetime.now(timezone.utc)
+                        if (self._last_btc_filter_log is None or
+                                (now_log - self._last_btc_filter_log).total_seconds()
+                                >= _BTC_FILTER_LOG_INTERVAL):
+                            logger.info(
+                                "BTC FILTER: %s bullish — blocking SELL (short) signals",
+                                self._btc_filter_symbol,
+                            )
+                            self._last_btc_filter_log = now_log
+                        continue
 
                     # Correlated-position cap: block if too many open positions in same direction
                     if self._open_positions_ref is not None:

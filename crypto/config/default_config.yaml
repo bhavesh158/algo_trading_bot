@@ -85,11 +85,14 @@ strategies:
     - mean_reversion
     - breakout_momentum
   default_confidence_threshold: 0.55   # was 0.6 — strategies rarely exceeded 0.60
+  sell_confidence_threshold: 0.75      # Higher bar for shorts — shorting crypto is riskier than going long
   # Signal burst limiter — prevents correlated batch entries
   signal_burst_window_seconds: 600      # 10 min rolling window
   max_signals_per_window: 5             # Max signals in the window (was 3)
   per_symbol_cooldown_seconds: 900      # 15 min between signals for same symbol
-  # BTC market direction filter — block all BUY signals when BTC 1h is bearish
+  # BTC market direction filter (symmetric):
+  #   BTC bearish -> block BUY  (don't buy into a downtrend)
+  #   BTC bullish -> block SELL (don't short into an uptrend)
   btc_trend_filter_enabled: true
   btc_trend_symbol: "BTC/USDT"
   btc_trend_timeframe: "1h"
