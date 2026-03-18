@@ -113,8 +113,14 @@ vwap_reversion:
   exit_at_vwap: true                 # Exit when price returns to VWAP
   require_trend_alignment: true      # Higher-TF trend must support direction
   volume_multiplier: 1.2             # Require above-avg volume at entry
-  max_hold_minutes: 60               # Quick reversion trades
   min_target_pct: 0.5                # Target must be > 0.5% to cover fees
+  # --- Exit logic ---
+  # Phase 2a: once unrealized profit >= trail_activate_pct%, switch from
+  # VWAP-touch exit to trailing stop (momentum mode).
+  trail_activate_pct: 0.5            # Activate trailing stop after 0.5% unrealized gain
+  trailing_stop_pct: 0.3             # Trail at 0.3% from peak (BUY) or trough (SELL)
+  # Phase 3: time exit is now a safety net only — 4 hours lets momentum run
+  max_hold_minutes: 240              # Was 60; trailing stop exits strong trends earlier
 
 # --- Macro AI Analyst ---
 # Runs at pre-market + every refresh_minutes during market hours.
