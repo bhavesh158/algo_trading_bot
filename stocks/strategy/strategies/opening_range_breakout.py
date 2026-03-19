@@ -1,7 +1,12 @@
-"""Opening Range Breakout (ORB) Strategy.
+"""Opening Range Breakout (ORB) Strategy (Enhanced).
 
 Monitors the first N minutes of trading to establish an opening range,
 then trades breakouts above/below that range.
+
+Relaxed filters for more signal generation:
+- Volume confirmation disabled by default (was blocking valid breakouts)
+- Lower minimum range size requirement
+- Smaller breakout buffer for earlier entries
 """
 
 from __future__ import annotations
@@ -21,19 +26,19 @@ logger = logging.getLogger(__name__)
 
 
 class OpeningRangeBreakoutStrategy(BaseStrategy):
-    """Trade breakouts from the opening range (first N minutes)."""
+    """Trade breakouts/breakdowns from the opening range (first N minutes)."""
 
     def __init__(self, config: dict[str, Any], market_data: MarketDataEngine) -> None:
         super().__init__("opening_range_breakout", config, market_data)
 
         strat_config = config.get("opening_range_breakout", {})
         self._or_minutes = strat_config.get("opening_range_minutes", 15)
-        self._buffer_pct = strat_config.get("breakout_buffer_pct", 0.2)
+        self._buffer_pct = strat_config.get("breakout_buffer_pct", 0.15)  # Lower from 0.2
         self._atr_stop = strat_config.get("atr_multiplier_stop", 1.5)
         self._atr_target = strat_config.get("atr_multiplier_target", 3.0)
-        self._max_window_minutes = strat_config.get("max_window_minutes", 60)
-        self._volume_confirm = strat_config.get("volume_confirm", True)
-        self._min_range_atr_ratio = strat_config.get("min_range_atr_ratio", 0.5)
+        self._max_window_minutes = strat_config.get("max_window_minutes", 90)  # Extended from 60
+        self._volume_confirm = strat_config.get("volume_confirm", False)  # Disabled by default
+        self._min_range_atr_ratio = strat_config.get("min_range_atr_ratio", 0.3)  # Lower from 0.5
         self.primary_timeframe = Timeframe.M1
 
         # Enable trailing stop and time exit from base class
@@ -107,11 +112,15 @@ class OpeningRangeBreakoutStrategy(BaseStrategy):
             return None
         current_price = float(df["close"].iloc[-1])
 
-        # Volume confirmation: current candle volume > 10-period average
+        # Volume confirmation (DISABLED by default - was blocking too many signals)
         if self._volume_confirm and "volume" in df.columns:
             current_vol = float(df["volume"].iloc[-1])
             avg_vol = float(df["volume"].tail(10).mean())
             if avg_vol > 0 and current_vol < avg_vol:
+                logger.debug(
+                    "[%s] Volume filter blocked %s: vol=%.0f < %.0f",
+                    self.strategy_id, symbol, current_vol, avg_vol,
+                )
                 return None
 
         # ATR for stop/target
@@ -122,24 +131,24 @@ class OpeningRangeBreakoutStrategy(BaseStrategy):
 
         buffer = or_high * self._buffer_pct / 100
 
-        # Range size filter: skip if opening range is too narrow
-        or_range = or_high - or_low
-        if atr_value > 0 and or_range < atr_value * self._min_range_atr_ratio:
+        # Range size filter (RELAXED - lower threshold)
+        range_size = or_high - or_low
+        if atr_value > 0 and range_size < atr_value * self._min_range_atr_ratio:
             logger.debug(
                 "[%s] ORB range too narrow for %s: range=%.2f < %.2f (%.1f×ATR)",
-                self.strategy_id, symbol, or_range,
+                self.strategy_id, symbol, range_size,
                 atr_value * self._min_range_atr_ratio, self._min_range_atr_ratio,
             )
             return None
 
         # Dynamic confidence based on range size, volume, and breakout strength
-        base_confidence = 0.55
+        base_confidence = 0.50  # Lower base to allow more signals
 
         # Bullish breakout
         if current_price > or_high + buffer:
             breakout_pct = (current_price - or_high) / or_high * 100
             confidence = self._compute_dynamic_confidence(
-                base_confidence, or_range, atr_value, df, breakout_pct,
+                base_confidence, range_size, atr_value, df, breakout_pct,
             )
             strength = SignalStrength.STRONG if confidence >= 0.75 else SignalStrength.MODERATE
 
@@ -164,11 +173,11 @@ class OpeningRangeBreakoutStrategy(BaseStrategy):
             self._signals_fired[symbol] = True
             return signal
 
-        # Bearish breakout (sell signal)
+        # Bearish breakout (SELL signal) - breakdown
         if current_price < or_low - buffer:
             breakout_pct = (or_low - current_price) / or_low * 100
             confidence = self._compute_dynamic_confidence(
-                base_confidence, or_range, atr_value, df, breakout_pct,
+                base_confidence, range_size, atr_value, df, breakout_pct,
             )
             strength = SignalStrength.STRONG if confidence >= 0.75 else SignalStrength.MODERATE
 
@@ -187,7 +196,7 @@ class OpeningRangeBreakoutStrategy(BaseStrategy):
                 },
             )
             logger.info(
-                "[%s] ORB bearish breakout: %s price=%.2f < OR_low=%.2f conf=%.2f",
+                "[%s] ORB bearish breakdown: %s price=%.2f < OR_low=%.2f conf=%.2f",
                 self.strategy_id, symbol, current_price, or_low, confidence,
             )
             self._signals_fired[symbol] = True

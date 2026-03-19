@@ -54,6 +54,11 @@ class TradingScheduler:
         # Post-close cooldown: prevent re-entering a symbol for N minutes after close
         self._cooldown_minutes = sched_config.get("trade_cooldown_minutes", 15)
         self._symbol_cooldown: dict[str, datetime] = {}  # symbol -> cooldown_end
+        
+        # Cross-session cooldown: track last exit time per symbol ACROSS days
+        # This prevents re-entering a symbol that caused a loss on the previous day
+        self._symbol_last_exit: dict[str, datetime] = {}  # symbol -> last_exit_time
+        self._cross_session_cooldown_hours = sched_config.get("cross_session_cooldown_hours", 2)
 
         logger.info("TradingScheduler initialized (open=%s, close=%s)",
                      self._market_open.strftime("%H:%M"), self._market_close.strftime("%H:%M"))
@@ -310,17 +315,33 @@ class TradingScheduler:
                         )
                         continue
 
-            # Skip if symbol is in post-close cooldown
+            # Skip if symbol is in post-close cooldown (intra-day)
             cooldown_end = self._symbol_cooldown.get(signal.symbol)
             if cooldown_end is not None:
                 if datetime.now() < cooldown_end:
                     logger.debug(
-                        "Signal suppressed (cooldown): %s until %s",
+                        "Signal suppressed (intra-day cooldown): %s until %s",
                         signal.symbol, cooldown_end.strftime("%H:%M:%S"),
                     )
                     continue
                 else:
                     del self._symbol_cooldown[signal.symbol]
+
+            # Skip if symbol is in cross-session cooldown (exited with loss recently)
+            last_exit = self._symbol_last_exit.get(signal.symbol)
+            if last_exit is not None:
+                cooldown_end_cross = last_exit + timedelta(hours=self._cross_session_cooldown_hours)
+                if datetime.now() < cooldown_end_cross:
+                    logger.debug(
+                        "Signal suppressed (cross-session cooldown): %s until %s "
+                        "(exited at %s)",
+                        signal.symbol, cooldown_end_cross.strftime("%H:%M:%S"),
+                        last_exit.strftime("%Y-%m-%d %H:%M:%S"),
+                    )
+                    continue
+                else:
+                    # Expired — remove from tracking
+                    del self._symbol_last_exit[signal.symbol]
 
             # Skip if already have a position in this symbol
             if signal.symbol in system.portfolio_manager.get_open_position_symbols():
@@ -380,26 +401,55 @@ class TradingScheduler:
 
                 # Commission-aware holdback: if the strategy-target exit would net a
                 # loss after round-trip fees, hold a bit longer so price can run past
-                # the target. Always exit on time / deep-red / non-target exits.
+                # the target. ALWAYS exit on:
+                # 1. Stop-loss hits
+                # 2. Time exit (near expiry)
+                # 3. Deep losses (loss exceeds threshold)
+                # 4. Trailing stop hits
                 if exit_reason == "strategy" and exit_comm > 0:
                     round_trip_comm = exit_comm * 2
                     gross_pnl = pos.unrealized_pnl  # direction-aware
-                    if gross_pnl < round_trip_comm:
-                        # Hard bail-out: position has gone well into the red
-                        deeply_negative = gross_pnl < -round_trip_comm
-                        # Bail-out: nearly expired (>80% of max hold elapsed)
-                        near_expiry = (
-                            pos.max_hold_minutes > 0
-                            and pos.hold_duration_minutes >= pos.max_hold_minutes * 0.80
+                    gross_pnl_pct = pos.unrealized_pnl_pct  # percentage
+                    
+                    # Calculate loss threshold: exit if loss > 1.5× round-trip commission
+                    # This prevents holding positions that are bleeding beyond reasonable hope
+                    loss_threshold = -round_trip_comm * 1.5
+                    
+                    # Hard bail-out: position has gone significantly negative
+                    deeply_negative = gross_pnl < loss_threshold
+                    
+                    # Bail-out: nearly expired (>80% of max hold elapsed)
+                    near_expiry = (
+                        pos.max_hold_minutes > 0
+                        and pos.hold_duration_minutes >= pos.max_hold_minutes * 0.80
+                    )
+                    
+                    # Force exit if deeply negative OR near expiry, regardless of commission
+                    if deeply_negative:
+                        logger.info(
+                            "Forcing exit %s — deep loss: gross %.2f < threshold %.2f "
+                            "(held %.0f/%.0f min)",
+                            symbol, gross_pnl, loss_threshold,
+                            pos.hold_duration_minutes, pos.max_hold_minutes or 0,
                         )
-                        if not deeply_negative and not near_expiry:
-                            logger.debug(
-                                "Holding %s — gross %.2f < round-trip comm %.2f "
-                                "(held %.0f/%.0f min)",
-                                symbol, gross_pnl, round_trip_comm,
-                                pos.hold_duration_minutes, pos.max_hold_minutes or 0,
-                            )
-                            continue
+                        # Proceed to exit (don't continue)
+                    elif near_expiry:
+                        logger.info(
+                            "Forcing exit %s — near expiry: gross %.2f, held %.0f/%.0f min",
+                            symbol, gross_pnl,
+                            pos.hold_duration_minutes, pos.max_hold_minutes or 0,
+                        )
+                        # Proceed to exit
+                    elif gross_pnl < round_trip_comm:
+                        # Hold only if loss is small and not near expiry
+                        logger.debug(
+                            "Holding %s — gross %.2f < round-trip comm %.2f "
+                            "(held %.0f/%.0f min, loss threshold=%.2f)",
+                            symbol, gross_pnl, round_trip_comm,
+                            pos.hold_duration_minutes, pos.max_hold_minutes or 0,
+                            loss_threshold,
+                        )
+                        continue
 
                 trade = system.portfolio_manager.close_position(
                     symbol, current_price, exit_comm
@@ -413,13 +463,29 @@ class TradingScheduler:
                     system.trade_journal.log_close(trade)
                     system.performance_monitor.record_trade(trade)
                     system.order_executor.release_symbol(symbol)
-                    # Apply cooldown: prevent re-entering this symbol for N minutes
+                    
+                    # Apply intra-day cooldown: prevent re-entering this symbol for N minutes
                     self._symbol_cooldown[symbol] = datetime.now() + timedelta(
                         minutes=self._cooldown_minutes
                     )
                     logger.debug(
-                        "Cooldown set for %s: %d min", symbol, self._cooldown_minutes
+                        "Intra-day cooldown set for %s: %d min", symbol, self._cooldown_minutes
                     )
+                    
+                    # Apply cross-session cooldown if position exited with a loss
+                    # This prevents re-entering a losing position on the same/next day
+                    if trade.pnl < 0:
+                        self._symbol_last_exit[symbol] = datetime.now()
+                        logger.info(
+                            "Cross-session cooldown set for %s: %d hours (loss=%.2f)",
+                            symbol, self._cross_session_cooldown_hours, trade.pnl,
+                        )
+                    # Clean up old entries (older than 24 hours)
+                    cutoff = datetime.now() - timedelta(hours=24)
+                    self._symbol_last_exit = {
+                        s: t for s, t in self._symbol_last_exit.items()
+                        if t > cutoff
+                    }
 
         # Evaluate strategy performance periodically
         underperforming = system.performance_monitor.evaluate_strategies()

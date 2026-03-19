@@ -1,15 +1,16 @@
-"""VWAP Reversion Strategy.
+"""VWAP Reversion Strategy (Enhanced).
 
 Enters when price deviates significantly from VWAP (Volume Weighted Average
 Price) and expects reversion. VWAP is a strong intraday anchor — large
 deviations tend to revert, especially in liquid large-cap stocks.
 
 Key features:
-- BUY when price is >deviation_pct below VWAP (with volume + trend confirmation)
-- SELL when price is >deviation_pct above VWAP (with confirmation)
+- BUY when price deviates below VWAP (default 1.2%, configurable)
+- SELL when price deviates above VWAP (default 1.0%, lower for easier triggers)
 - Exit when price returns to VWAP
 - Commission-aware: target must exceed min_target_pct to cover fees
 - Higher-timeframe trend alignment required
+- RSI confirmation for both directions
 """
 
 from __future__ import annotations
@@ -34,20 +35,25 @@ class VWAPReversionStrategy(BaseStrategy):
         super().__init__("vwap_reversion", config, market_data)
 
         strat_config = config.get("vwap_reversion", {})
-        self._deviation_pct = strat_config.get("deviation_pct", 1.5)
+        # Lower defaults for easier triggers
+        self._deviation_pct_buy = strat_config.get("deviation_pct_buy", 1.2)  # Lower from 1.5%
+        self._deviation_pct_sell = strat_config.get("deviation_pct_sell", 1.0)  # Even lower for SELL
         self._exit_at_vwap = strat_config.get("exit_at_vwap", True)
         self._require_trend = strat_config.get("require_trend_alignment", True)
-        self._volume_multiplier = strat_config.get("volume_multiplier", 1.2)
-        self._min_target_pct = strat_config.get("min_target_pct", 0.5)
+        self._volume_multiplier = strat_config.get("volume_multiplier", 1.0)  # Lower from 1.2 (easier trigger)
+        self._min_target_pct = strat_config.get("min_target_pct", 0.4)  # Lower from 0.5%
         self.primary_timeframe = Timeframe.M5
 
-        # Trailing stop with activation threshold (base class uses _trailing_stop_pct)
-        # Activate once unrealized profit ≥ trail_activate_pct%; then trail at trailing_stop_pct%
-        self._trail_activate_pct: float = strat_config.get("trail_activate_pct", 0.5)
+        # RSI thresholds
+        self._rsi_capitulation_floor = strat_config.get("rsi_capitulation_floor", 15)  # BUY floor
+        self._rsi_overbought_ceiling = strat_config.get("rsi_overbought_ceiling", 85)  # SELL ceiling
+
+        # Trailing stop with activation threshold
+        self._trail_activate_pct: float = strat_config.get("trail_activate_pct", 0.4)  # Lower from 0.5%
         self._trailing_stop_pct: float = strat_config.get("trailing_stop_pct", 0.3)
 
-        # Time exit: safety net only — extended to 4 hours so momentum trades can run
-        self._max_hold_minutes = strat_config.get("max_hold_minutes", 240)
+        # Time exit: safety net
+        self._max_hold_minutes = strat_config.get("max_hold_minutes", 180)  # Lower from 240
 
     def _get_vwap(self, symbol: str) -> Optional[float]:
         """Get current VWAP value."""
@@ -105,30 +111,48 @@ class VWAPReversionStrategy(BaseStrategy):
             return None
         atr_value = float(atr.iloc[-1])
 
-        # Volume confirmation
+        # Volume confirmation (relaxed - only skip on very low volume)
         if "volume" in df.columns and len(df) >= 20:
             current_vol = float(df["volume"].iloc[-1])
             avg_vol = float(df["volume"].iloc[-20:].mean())
             if avg_vol > 0 and current_vol < avg_vol * self._volume_multiplier:
-                return None  # Below-average volume — skip
+                # Only log for debugging, don't block
+                logger.debug(
+                    "[%s] Low volume for %s: vol=%.0f < %.0f (avg)",
+                    self.strategy_id, symbol, current_vol, avg_vol * self._volume_multiplier,
+                )
 
-        # --- BUY: Price significantly below VWAP ---
-        if deviation_pct <= -self._deviation_pct:
-            if rsi_val < 15:
-                return None  # Capitulation — skip
+        # --- BUY: Price below VWAP by deviation threshold ---
+        if deviation_pct <= -self._deviation_pct_buy:
+            # RSI capitulation filter: skip if RSI < 15 (free-fall)
+            if rsi_val < self._rsi_capitulation_floor:
+                logger.debug(
+                    "[%s] RSI capitulation blocked BUY %s: RSI=%.1f < %d",
+                    self.strategy_id, symbol, rsi_val, self._rsi_capitulation_floor,
+                )
+                return None
 
+            # Trend filter: higher TF must not be in strong downtrend
             if self._require_trend and not self._is_trend_aligned(symbol, OrderSide.BUY):
+                logger.debug(
+                    "[%s] Trend filter blocked BUY %s: not aligned",
+                    self.strategy_id, symbol,
+                )
                 return None
 
             target = vwap_val  # Revert to VWAP
             expected_profit_pct = (target - current_price) / current_price * 100
             if expected_profit_pct < self._min_target_pct:
-                return None  # Target too small to cover fees
+                logger.debug(
+                    "[%s] Expected profit too small for %s: %.2f%% < %.2f%%",
+                    self.strategy_id, symbol, expected_profit_pct, self._min_target_pct,
+                )
+                return None
 
             stop_loss = current_price - 1.5 * atr_value
             confidence = min(abs(deviation_pct) / 3.0, 1.0)
 
-            # RSI confirmation boost
+            # RSI confirmation boost (oversold = higher confidence)
             if rsi_val < 35:
                 confidence = min(confidence + 0.1, 1.0)
 
@@ -151,27 +175,42 @@ class VWAPReversionStrategy(BaseStrategy):
                 },
             )
             logger.info(
-                "[%s] VWAP reversion BUY: %s price=%.2f vwap=%.2f dev=%.2f%% rsi=%.1f",
-                self.strategy_id, symbol, current_price, vwap_val, deviation_pct, rsi_val,
+                "[%s] VWAP reversion BUY: %s price=%.2f vwap=%.2f dev=%.2f%% rsi=%.1f conf=%.2f",
+                self.strategy_id, symbol, current_price, vwap_val, deviation_pct, rsi_val, confidence,
             )
             return signal
 
-        # --- SELL: Price significantly above VWAP ---
-        if deviation_pct >= self._deviation_pct:
-            if rsi_val > 85:
-                return None  # Extreme overbought — could keep running
+        # --- SELL: Price above VWAP by deviation threshold (LOWER threshold) ---
+        if deviation_pct >= self._deviation_pct_sell:
+            # RSI overbought filter: skip if RSI > 85 (vertical pump)
+            if rsi_val > self._rsi_overbought_ceiling:
+                logger.debug(
+                    "[%s] RSI overbought blocked SELL %s: RSI=%.1f > %d",
+                    self.strategy_id, symbol, rsi_val, self._rsi_overbought_ceiling,
+                )
+                return None
 
+            # Trend filter: higher TF must not be in strong uptrend
             if self._require_trend and not self._is_trend_aligned(symbol, OrderSide.SELL):
+                logger.debug(
+                    "[%s] Trend filter blocked SELL %s: not aligned",
+                    self.strategy_id, symbol,
+                )
                 return None
 
             target = vwap_val
             expected_profit_pct = (current_price - target) / current_price * 100
             if expected_profit_pct < self._min_target_pct:
+                logger.debug(
+                    "[%s] Expected profit too small for %s: %.2f%% < %.2f%%",
+                    self.strategy_id, symbol, expected_profit_pct, self._min_target_pct,
+                )
                 return None
 
             stop_loss = current_price + 1.5 * atr_value
             confidence = min(abs(deviation_pct) / 3.0, 1.0)
 
+            # RSI confirmation boost (overbought = higher confidence)
             if rsi_val > 65:
                 confidence = min(confidence + 0.1, 1.0)
 
@@ -194,8 +233,8 @@ class VWAPReversionStrategy(BaseStrategy):
                 },
             )
             logger.info(
-                "[%s] VWAP reversion SELL: %s price=%.2f vwap=%.2f dev=%.2f%% rsi=%.1f",
-                self.strategy_id, symbol, current_price, vwap_val, deviation_pct, rsi_val,
+                "[%s] VWAP reversion SELL: %s price=%.2f vwap=%.2f dev=%.2f%% rsi=%.1f conf=%.2f",
+                self.strategy_id, symbol, current_price, vwap_val, deviation_pct, rsi_val, confidence,
             )
             return signal
 

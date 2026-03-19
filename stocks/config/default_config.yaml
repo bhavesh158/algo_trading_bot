@@ -61,9 +61,11 @@ selection:
 # --- Scheduler / Anti-Churn ---
 scheduler:
   max_entries_per_cycle: 2           # Max new positions per cycle (prevents correlated batch entries)
-  min_expected_profit_pct: 0.5       # Reject signals with <0.5% expected profit (must cover fees)
+  min_expected_profit_pct: 0.4       # Lower from 0.5% — allow more signals
   min_hold_minutes: 10               # Don't exit (except stop-loss) within 10 min of open
   signal_cooldown_seconds: 300       # 5-min cooldown per symbol after entry/exit
+  trade_cooldown_minutes: 15         # Intra-day cooldown after position close
+  cross_session_cooldown_hours: 2    # Cross-session cooldown for symbols that exited with loss
 
 # --- Strategy Engine ---
 strategies:
@@ -72,55 +74,55 @@ strategies:
     - momentum_breakout
     - opening_range_breakout
     - vwap_reversion
-  default_confidence_threshold: 0.65
+  default_confidence_threshold: 0.60  # Lower from 0.65 — allow more signals through
 
 # --- Individual Strategy Configs ---
 mean_reversion:
   lookback_period: 20
-  entry_zscore: -2.2                  # Stricter entry — fewer false signals (was -2.0)
+  entry_zscore: -2.0                  # Less strict from -2.2 — more entry opportunities
   exit_zscore: 0.0
   stop_zscore: -3.0
-  min_exit_profit_pct: 0.5           # Don't exit below 0.5% gross profit (covers fees)
-  max_hold_minutes: 90               # Force exit after 90min to prevent bleeding
-  require_trend_alignment: true      # Only BUY when higher-TF trend is up/sideways
-  require_vwap_below: true           # Only BUY when price is below VWAP
-  rsi_capitulation_floor: 20         # Skip entry if RSI < 20 (capitulation)
+  min_exit_profit_pct: 0.4           # Lower from 0.5% — easier exits
+  max_hold_minutes: 90
+  require_trend_alignment: true      # BUY in uptrend/sideways, SELL in downtrend
+  require_vwap: true                 # BUY below VWAP, SELL above VWAP
+  rsi_capitulation_floor: 15         # Lower from 20 — catch deeper oversold
+  rsi_overbought_ceiling: 80         # NEW: for SELL signals
 
 momentum_breakout:
   lookback_period: 20
   volume_multiplier: 1.5
   breakout_threshold_pct: 1.0
   atr_multiplier_stop: 2.0
-  atr_multiplier_target: 4.0         # Wider targets — let breakouts run (was 3.0)
-  trailing_stop_atr: 1.5             # Trail stop at highest - 1.5×ATR
-  max_hold_minutes: 180              # Max 3h hold for breakout trades
-  require_vwap_above: true           # Only enter breakouts above VWAP
-  volume_decay_exit_ratio: 0.7       # Exit if volume drops below 0.7× avg
+  atr_multiplier_target: 4.0
+  trailing_stop_atr: 1.5
+  max_hold_minutes: 180
+  require_vwap: true                 # BUY above VWAP, SELL below VWAP
+  volume_decay_exit_ratio: 0.7
 
 opening_range_breakout:
   opening_range_minutes: 15
-  breakout_buffer_pct: 0.2           # Wider buffer — fewer false breakouts (was 0.1)
+  breakout_buffer_pct: 0.15          # Lower from 0.2 — earlier entries
   atr_multiplier_stop: 1.5
-  atr_multiplier_target: 3.0         # Wider target (was 2.5)
-  max_window_minutes: 60             # Only fire within 60 min of market open
-  volume_confirm: true               # Require above-average volume on breakout candle
-  trailing_stop_atr: 1.2             # Tighter trailing stop for ORB
-  max_hold_minutes: 150              # Max 2.5h hold
-  min_range_atr_ratio: 0.5           # Skip if OR range < 0.5×ATR (too narrow)
+  atr_multiplier_target: 3.0
+  max_window_minutes: 90             # Extended from 60 — more time for ORB signals
+  volume_confirm: false              # Disabled — was blocking valid breakouts
+  trailing_stop_atr: 1.2
+  max_hold_minutes: 150
+  min_range_atr_ratio: 0.3           # Lower from 0.5 — allow narrower ranges
 
 vwap_reversion:
-  deviation_pct: 1.5                 # Enter when price > 1.5% from VWAP
-  exit_at_vwap: true                 # Exit when price returns to VWAP
-  require_trend_alignment: true      # Higher-TF trend must support direction
-  volume_multiplier: 1.2             # Require above-avg volume at entry
-  min_target_pct: 0.5                # Target must be > 0.5% to cover fees
-  # --- Exit logic ---
-  # Phase 2a: once unrealized profit >= trail_activate_pct%, switch from
-  # VWAP-touch exit to trailing stop (momentum mode).
-  trail_activate_pct: 0.5            # Activate trailing stop after 0.5% unrealized gain
-  trailing_stop_pct: 0.3             # Trail at 0.3% from peak (BUY) or trough (SELL)
-  # Phase 3: time exit is now a safety net only — 4 hours lets momentum run
-  max_hold_minutes: 240              # Was 60; trailing stop exits strong trends earlier
+  deviation_pct_buy: 1.2             # Lower from 1.5% — easier BUY triggers
+  deviation_pct_sell: 1.0            # NEW: even lower for SELL (crash days)
+  exit_at_vwap: true
+  require_trend_alignment: true
+  volume_multiplier: 1.0             # Lower from 1.2 — easier triggers
+  min_target_pct: 0.4                # Lower from 0.5%
+  trail_activate_pct: 0.4            # Lower from 0.5%
+  trailing_stop_pct: 0.3
+  max_hold_minutes: 180              # Lower from 240
+  rsi_capitulation_floor: 15         # BUY floor
+  rsi_overbought_ceiling: 85         # SELL ceiling
 
 # --- Macro AI Analyst ---
 # Runs at pre-market + every refresh_minutes during market hours.

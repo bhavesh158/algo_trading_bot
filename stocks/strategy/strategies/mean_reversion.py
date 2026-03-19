@@ -1,15 +1,17 @@
-"""Mean Reversion Strategy (Enhanced).
+"""Mean Reversion Strategy (Enhanced with SELL signals).
 
 Trades when price deviates significantly from its moving average (measured by
-z-score of the Bollinger Bands). Enters when price is oversold and exits when
-it reverts to the mean.
+z-score of the Bollinger Bands). 
 
-Enhancements over original:
-- Higher-timeframe trend filter: Only BUY in uptrend/sideways, never in downtrend
-- VWAP filter: Only BUY below VWAP (genuine undervaluation)
-- RSI capitulation floor: Skip if RSI < 20 (falling knife)
-- Min exit profit: Don't exit until gross profit covers fees
-- Max hold duration: Force exit to prevent prolonged bleeding
+BUY when price is oversold (zscore <= -2.0) in uptrend/sideways markets.
+SELL when price is overbought (zscore >= +2.0) in downtrend markets.
+
+Key features:
+- Directional bias based on market regime (BUY in uptrend, SELL in downtrend)
+- VWAP filter for BUY (price below VWAP) / SELL (price above VWAP)
+- RSI filters to avoid capitulation zones
+- Min exit profit to cover fees
+- Max hold duration to prevent bleeding
 """
 
 from __future__ import annotations
@@ -28,10 +30,10 @@ logger = logging.getLogger(__name__)
 
 
 class MeanReversionStrategy(BaseStrategy):
-    """Buy when price drops below lower Bollinger Band; exit at mean.
+    """Mean reversion with both BUY (oversold) and SELL (overbought) signals.
 
-    Filtered by trend alignment, VWAP, and RSI to avoid buying dips
-    in actively downtrending stocks.
+    BUY: Price significantly below mean (zscore <= -2.0) in uptrend/sideways
+    SELL: Price significantly above mean (zscore >= +2.0) in downtrend
     """
 
     def __init__(self, config: dict[str, Any], market_data: MarketDataEngine) -> None:
@@ -39,53 +41,63 @@ class MeanReversionStrategy(BaseStrategy):
 
         strat_config = config.get("mean_reversion", {})
         self._lookback = strat_config.get("lookback_period", 20)
-        self._entry_zscore = strat_config.get("entry_zscore", -2.2)
+        self._entry_zscore = strat_config.get("entry_zscore", -2.0)  # Less strict
         self._exit_zscore = strat_config.get("exit_zscore", 0.0)
         self._stop_zscore = strat_config.get("stop_zscore", -3.0)
         self._min_exit_profit_pct = strat_config.get("min_exit_profit_pct", 0.5)
         self._require_trend = strat_config.get("require_trend_alignment", True)
-        self._require_vwap_below = strat_config.get("require_vwap_below", True)
-        self._rsi_floor = strat_config.get("rsi_capitulation_floor", 20)
+        self._require_vwap = strat_config.get("require_vwap", True)  # Renamed for clarity
+        self._rsi_floor = strat_config.get("rsi_capitulation_floor", 15)  # Lower from 20
+        self._rsi_ceiling = strat_config.get("rsi_overbought_ceiling", 80)  # NEW: for SELL
         self._max_hold_minutes = strat_config.get("max_hold_minutes", 90)
         self.primary_timeframe = Timeframe.M5
 
-    def _is_trend_aligned(self, symbol: str) -> bool:
-        """Check that higher-timeframe trend is NOT bearish.
+    def _get_trend_direction(self, symbol: str) -> str:
+        """Determine trend direction using 15m EMA9 vs EMA21.
 
-        Uses 15m EMA9 vs EMA21. Returns True if trend is up or sideways.
+        Returns: 'uptrend', 'downtrend', or 'sideways'
         """
         ema_9 = self.market_data.get_indicator(symbol, Timeframe.M15, "ema_9")
         ema_21 = self.market_data.get_indicator(symbol, Timeframe.M15, "ema_21")
 
         if ema_9 is None or ema_21 is None or ema_9.empty or ema_21.empty:
-            return True  # No data — allow (don't block on missing data)
+            return 'sideways'  # No data — treat as sideways
 
         ema_9_val = float(ema_9.iloc[-1])
         ema_21_val = float(ema_21.iloc[-1])
 
         if np.isnan(ema_9_val) or np.isnan(ema_21_val):
-            return True
+            return 'sideways'
 
-        # Block if clearly bearish (EMA9 meaningfully below EMA21)
-        if ema_21_val > 0:
-            gap_pct = (ema_9_val - ema_21_val) / ema_21_val * 100
-            if gap_pct < -0.15:  # EMA9 more than 0.15% below EMA21 = downtrend
-                logger.debug(
-                    "[%s] Trend filter blocked %s: EMA9=%.2f < EMA21=%.2f (gap=%.2f%%)",
-                    self.strategy_id, symbol, ema_9_val, ema_21_val, gap_pct,
-                )
-                return False
+        if ema_21_val <= 0:
+            return 'sideways'
 
-        return True
+        gap_pct = (ema_9_val - ema_21_val) / ema_21_val * 100
+        
+        if gap_pct > 0.15:
+            return 'uptrend'
+        elif gap_pct < -0.15:
+            return 'downtrend'
+        else:
+            return 'sideways'
 
     def _is_below_vwap(self, symbol: str, price: float) -> bool:
-        """Check that price is below VWAP (genuine undervaluation)."""
+        """Check that price is below VWAP (for BUY signals)."""
         vwap = self.market_data.get_indicator(symbol, self.primary_timeframe, "vwap")
         if vwap is None or vwap.empty or np.isnan(vwap.iloc[-1]):
             return True  # No VWAP data — allow
 
         vwap_val = float(vwap.iloc[-1])
         return price < vwap_val
+
+    def _is_above_vwap(self, symbol: str, price: float) -> bool:
+        """Check that price is above VWAP (for SELL signals)."""
+        vwap = self.market_data.get_indicator(symbol, self.primary_timeframe, "vwap")
+        if vwap is None or vwap.empty or np.isnan(vwap.iloc[-1]):
+            return True  # No VWAP data — allow
+
+        vwap_val = float(vwap.iloc[-1])
+        return price > vwap_val
 
     def _check_rsi_floor(self, symbol: str) -> bool:
         """Return False if RSI is in capitulation territory (< floor)."""
@@ -98,6 +110,21 @@ class MeanReversionStrategy(BaseStrategy):
             logger.debug(
                 "[%s] RSI capitulation filter blocked %s: RSI=%.1f < %d",
                 self.strategy_id, symbol, rsi_val, self._rsi_floor,
+            )
+            return False
+        return True
+
+    def _check_rsi_ceiling(self, symbol: str) -> bool:
+        """Return False if RSI is in overbought territory (> ceiling)."""
+        rsi = self.market_data.get_indicator(symbol, self.primary_timeframe, "rsi_14")
+        if rsi is None or rsi.empty or np.isnan(rsi.iloc[-1]):
+            return True
+
+        rsi_val = float(rsi.iloc[-1])
+        if rsi_val > self._rsi_ceiling:
+            logger.debug(
+                "[%s] RSI overbought filter blocked %s: RSI=%.1f > %d",
+                self.strategy_id, symbol, rsi_val, self._rsi_ceiling,
             )
             return False
         return True
@@ -119,21 +146,28 @@ class MeanReversionStrategy(BaseStrategy):
         current_std = float(std.iloc[-1])
         zscore = (current_price - current_sma) / current_std
 
-        # Entry condition: price significantly below mean
+        # Get trend direction for directional bias
+        trend = self._get_trend_direction(symbol)
+
+        # ==================== BUY SIGNAL (oversold in uptrend/sideways) ====================
         if zscore <= self._entry_zscore:
-            # --- FILTER 1: Higher-timeframe trend alignment ---
-            if self._require_trend and not self._is_trend_aligned(symbol):
+            # Only BUY in uptrend or sideways (not downtrend)
+            if self._require_trend and trend == 'downtrend':
+                logger.debug(
+                    "[%s] Trend filter blocked BUY %s: trend=%s",
+                    self.strategy_id, symbol, trend,
+                )
                 return None
 
-            # --- FILTER 2: Price must be below VWAP ---
-            if self._require_vwap_below and not self._is_below_vwap(symbol, current_price):
+            # VWAP filter: price must be below VWAP for BUY
+            if self._require_vwap and not self._is_below_vwap(symbol, current_price):
                 logger.debug(
-                    "[%s] VWAP filter blocked %s: price above VWAP",
+                    "[%s] VWAP filter blocked BUY %s: price above VWAP",
                     self.strategy_id, symbol,
                 )
                 return None
 
-            # --- FILTER 3: RSI not in capitulation ---
+            # RSI must not be in capitulation (falling knife)
             if not self._check_rsi_floor(symbol):
                 return None
 
@@ -170,18 +204,93 @@ class MeanReversionStrategy(BaseStrategy):
                 metadata={
                     "zscore": zscore,
                     "sma": current_sma,
+                    "trend": trend,
                     "max_hold_minutes": self._max_hold_minutes,
                 },
             )
             logger.info(
-                "[%s] Mean reversion signal: %s zscore=%.2f price=%.2f sma=%.2f (trend✓ vwap✓ rsi✓)",
-                self.strategy_id, symbol, zscore, current_price, current_sma,
+                "[%s] Mean reversion BUY: %s zscore=%.2f price=%.2f sma=%.2f trend=%s",
+                self.strategy_id, symbol, zscore, current_price, current_sma, trend,
+            )
+            return signal
+
+        # ==================== SELL SIGNAL (overbought in downtrend) ====================
+        sell_zscore = -self._entry_zscore  # Mirror: +2.0 if entry is -2.0
+        if zscore >= sell_zscore:
+            # Only SELL in downtrend (not uptrend or sideways)
+            if self._require_trend and trend != 'downtrend':
+                logger.debug(
+                    "[%s] Trend filter blocked SELL %s: trend=%s (need downtrend)",
+                    self.strategy_id, symbol, trend,
+                )
+                return None
+
+            # VWAP filter: price must be above VWAP for SELL
+            if self._require_vwap and not self._is_above_vwap(symbol, current_price):
+                logger.debug(
+                    "[%s] VWAP filter blocked SELL %s: price below VWAP",
+                    self.strategy_id, symbol,
+                )
+                return None
+
+            # RSI must be elevated (overbought territory)
+            if not self._check_rsi_ceiling(symbol):
+                return None
+
+            # Calculate stop and target using z-scores
+            stop_loss = current_sma + (-self._stop_zscore) * current_std  # Invert for SELL
+            target = current_sma  # Revert to mean
+
+            # Ensure target is far enough to cover commissions
+            expected_move_pct = (current_price - target) / current_price * 100
+            if expected_move_pct < self._min_exit_profit_pct:
+                logger.debug(
+                    "[%s] Expected move too small for %s: %.2f%% < %.2f%%",
+                    self.strategy_id, symbol, expected_move_pct, self._min_exit_profit_pct,
+                )
+                return None
+
+            # Confidence scales with how extreme the deviation is
+            confidence = min(abs(zscore) / 3.0, 1.0)
+
+            if zscore >= sell_zscore * 1.5:
+                strength = SignalStrength.STRONG
+            else:
+                strength = SignalStrength.MODERATE
+
+            signal = Signal(
+                strategy_id=self.strategy_id,
+                symbol=symbol,
+                side=OrderSide.SELL,
+                strength=strength,
+                confidence=confidence,
+                entry_price=current_price,
+                stop_loss=stop_loss,
+                target_price=target,
+                metadata={
+                    "zscore": zscore,
+                    "sma": current_sma,
+                    "trend": trend,
+                    "max_hold_minutes": self._max_hold_minutes,
+                },
+            )
+            logger.info(
+                "[%s] Mean reversion SELL: %s zscore=%.2f price=%.2f sma=%.2f trend=%s",
+                self.strategy_id, symbol, zscore, current_price, current_sma, trend,
             )
             return signal
 
         return None
 
-    def should_exit(self, symbol: str, entry_price: float, current_price: float) -> bool:
+    def should_exit(self, symbol: str, entry_price: float, current_price: float, 
+                    side: Optional[OrderSide] = None) -> bool:
+        """Exit logic for both BUY and SELL positions.
+
+        BUY exit: When zscore >= 0 (reverted to mean) OR zscore >= 0.5 (overshoot)
+        SELL exit: When zscore <= 0 (reverted to mean) OR zscore <= -0.5 (overshoot)
+        
+        Commission-aware: Hold if profit doesn't cover fees (unless overshoot).
+        """
         df = self.market_data.get_dataframe(symbol, self.primary_timeframe)
         if df is None or len(df) < self._lookback:
             return False
@@ -195,18 +304,44 @@ class MeanReversionStrategy(BaseStrategy):
 
         zscore = (current_price - float(sma.iloc[-1])) / float(std.iloc[-1])
 
-        # Exit when price reverts to mean — BUT only if profit covers fees
-        if zscore >= self._exit_zscore:
-            gross_profit_pct = (current_price - entry_price) / entry_price * 100
-            if gross_profit_pct >= self._min_exit_profit_pct:
-                return True
-            # If at mean but profit too small, hold a bit longer (up to time exit)
-            logger.debug(
-                "[%s] %s at mean (z=%.2f) but profit %.2f%% < min %.2f%%, holding",
-                self.strategy_id, symbol, zscore, gross_profit_pct, self._min_exit_profit_pct,
-            )
-            # However, if price is ABOVE mean (overshoot), take profit regardless
-            if zscore >= 0.5:
-                return True
+        # ==================== BUY POSITION EXIT ====================
+        if side is None or side == OrderSide.BUY:
+            # Exit when price reverts to mean (zscore >= 0)
+            if zscore >= self._exit_zscore:
+                gross_profit_pct = (current_price - entry_price) / entry_price * 100
+                if gross_profit_pct >= self._min_exit_profit_pct:
+                    return True
+                # If at mean but profit too small, hold a bit longer (up to time exit)
+                logger.debug(
+                    "[%s] %s BUY at mean (z=%.2f) but profit %.2f%% < min %.2f%%, holding",
+                    self.strategy_id, symbol, zscore, gross_profit_pct, self._min_exit_profit_pct,
+                )
+                # However, if price is ABOVE mean (overshoot), take profit regardless
+                if zscore >= 0.5:
+                    logger.info(
+                        "[%s] %s BUY overshoot exit: z=%.2f profit=%.2f%%",
+                        self.strategy_id, symbol, zscore, gross_profit_pct,
+                    )
+                    return True
+
+        # ==================== SELL POSITION EXIT ====================
+        if side is None or side == OrderSide.SELL:
+            # Exit when price reverts to mean (zscore <= 0)
+            if zscore <= self._exit_zscore:
+                gross_profit_pct = (entry_price - current_price) / entry_price * 100
+                if gross_profit_pct >= self._min_exit_profit_pct:
+                    return True
+                # If at mean but profit too small, hold a bit longer
+                logger.debug(
+                    "[%s] %s SELL at mean (z=%.2f) but profit %.2f%% < min %.2f%%, holding",
+                    self.strategy_id, symbol, zscore, gross_profit_pct, self._min_exit_profit_pct,
+                )
+                # However, if price is BELOW mean (overshoot), take profit regardless
+                if zscore <= -0.5:
+                    logger.info(
+                        "[%s] %s SELL overshoot exit: z=%.2f profit=%.2f%%",
+                        self.strategy_id, symbol, zscore, gross_profit_pct,
+                    )
+                    return True
 
         return False
