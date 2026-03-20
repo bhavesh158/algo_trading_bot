@@ -103,20 +103,40 @@ class PositionSizer:
         # Floor to integer, minimum 1
         result = max(1, math.floor(quantity))
 
-        # Minimum position value: ensure commission drag doesn't dominate.
-        # At 0.5% target, position_value >= min_value guarantees gross > round-trip fees.
-        min_pos_value = self.config.get("position_sizing", {}).get("min_position_value_inr", 10000)
-        if min_pos_value > 0 and signal.entry_price > 0:
+        # NEW: Commission-aware minimum position size
+        # Ensures commission drag stays below target % of position value
+        # Formula: min_position = round_trip_commission / target_drag_pct
+        # Example: ₹50 / 0.0015 = ₹33,333 → rounded to ₹50,000
+        ps_config = self.config.get("position_sizing", {})
+        commission_per_trade = self.config.get("paper_trading", {}).get("commission_per_trade", 25.0)
+        round_trip_comm = commission_per_trade * 2
+        target_commission_drag = ps_config.get("target_commission_drag_pct", 0.15) / 100
+        
+        # Calculate minimum position value to achieve target commission drag
+        min_position_value_by_commission = round_trip_comm / target_commission_drag
+        
+        # Use the higher of configured minimum or commission-calculated minimum
+        min_pos_value = max(
+            ps_config.get("min_position_value_inr", 50000),
+            min_position_value_by_commission
+        )
+        
+        if signal.entry_price > 0:
             min_qty = math.ceil(min_pos_value / signal.entry_price)
             if result < min_qty:
                 # Only raise if the larger quantity is still within the max-position cap
                 max_allowed_qty = max_value / signal.entry_price if signal.entry_price > 0 else 0
                 if min_qty <= max_allowed_qty:
-                    logger.debug(
-                        "Position size for %s raised %d→%d (min_position_value=%.0f)",
-                        signal.symbol, result, min_qty, min_pos_value,
+                    logger.info(
+                        "Position size for %s raised %d→%d (commission drag target=%.2f%%, min_value=%.0f)",
+                        signal.symbol, result, min_qty, target_commission_drag * 100, min_pos_value,
                     )
                     result = min_qty
+                else:
+                    logger.warning(
+                        "Cannot raise %s to min_qty %d (exceeds max_position_pct cap %.0f)",
+                        signal.symbol, min_qty, max_value,
+                    )
 
         logger.debug(
             "Position size for %s: qty=%d (risk_per_share=%.2f, capital_at_risk=%.2f, conf=%.2f)",

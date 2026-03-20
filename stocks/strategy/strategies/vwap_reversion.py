@@ -132,6 +132,18 @@ class VWAPReversionStrategy(BaseStrategy):
                 )
                 return None
 
+            # NEW: Momentum confirmation — avoid catching falling knives
+            # Check if price is in free-fall (>2% drop in last 5 candles)
+            if len(df) >= 5:
+                closes = df["close"].iloc[-5:]
+                momentum_5 = (closes.iloc[-1] - closes.iloc[0]) / closes.iloc[0] * 100
+                if momentum_5 < -2.0:  # Price dropping >2% in 5 candles
+                    logger.debug(
+                        "[%s] Momentum filter blocked BUY %s: 5-candle momentum=%.2f%% (falling knife)",
+                        self.strategy_id, symbol, momentum_5,
+                    )
+                    return None
+
             # Trend filter: higher TF must not be in strong downtrend
             if self._require_trend and not self._is_trend_aligned(symbol, OrderSide.BUY):
                 logger.debug(

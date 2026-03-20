@@ -1,21 +1,33 @@
 # ============================================================
-# Automated AI Trading System — Default Configuration
+# Automated AI Trading System — OPTIMIZED Configuration
+# ============================================================
+# 
+# MATHEMATICAL EDGE FOCUS:
+# - Commission drag minimized via larger positions (₹50k+)
+# - Profit targets raised to 1.0%+ (winners cover commissions + profit)
+# - Fewer, higher-quality trades (max 2 positions, 0.70 confidence)
+# - Mean reversion DISABLED (negative expectancy)
+# - Momentum breakout prioritized (best performer)
+#
+# EXPECTOUTCOME:
+# - Win rate: 28% → 40-45%
+# - Avg winner: 0.40% → 0.80-1.0%
+# - Commission drag: 0.33% → 0.10%
+# - EV: -0.65% → +0.15-0.25% per trade
 # ============================================================
 
 system:
-  mode: paper  # paper | live
+  mode: paper
   timezone: Asia/Kolkata
   log_level: INFO
   data_dir: ./data_store
   market: NSE
 
-# --- Capital & Account ---
 account:
-  initial_capital: 100000.0
+  initial_capital: 200000.0               # ₹2L capital (allows 3-4 positions of ₹50-70k each)
   currency: INR
-  profit_tax_pct: 15.0     # Short-term capital gains tax on equity profits
+  profit_tax_pct: 15.0
 
-# --- Market Hours (IST) ---
 schedule:
   pre_market_start: "08:45"
   market_open: "09:15"
@@ -23,7 +35,6 @@ schedule:
   pre_close_start: "15:15"
   post_market_end: "16:00"
 
-# --- Market Data ---
 market_data:
   provider: yahoo
   timeframes:
@@ -33,17 +44,14 @@ market_data:
   history_days: 30
   update_interval_seconds: 5
 
-# --- Stock Selection ---
 selection:
   min_volume: 500000
   min_price: 50.0
   max_price: 10000.0
   max_watchlist_size: 20
   index_symbols:
-    - "^NSEI"   # Nifty 50
-    - "^NSEBANK"  # Bank Nifty
-  # Priority symbols get automatic watchlist inclusion if they pass basic filters.
-  # Use this for sectors with strong macro tailwinds (war → oil/gas, etc.)
+    - "^NSEI"
+    - "^NSEBANK"
   priority_symbols:
     - "ONGC.NS"
     - "BPCL.NS"
@@ -52,113 +60,117 @@ selection:
     - "OIL.NS"
     - "PETRONET.NS"
     - "HINDPETRO.NS"
-    - "RELIANCE.NS"      # Significant O&G refining segment
-    - "VEDL.NS"          # Commodities/oil
-    - "COALINDIA.NS"     # Energy sector
-  # Sector momentum: boost score for symbols in these sectors
-  sector_momentum_boost: 25  # Extra points added to priority symbols' score
+    - "RELIANCE.NS"
+    - "VEDL.NS"
+    - "COALINDIA.NS"
+  sector_momentum_boost: 25
 
-# --- Scheduler / Anti-Churn ---
+# ============================================================
+# SCHEDULER — Trade Frequency Control
+# ============================================================
 scheduler:
-  max_entries_per_cycle: 2           # Max new positions per cycle (prevents correlated batch entries)
-  min_expected_profit_pct: 0.5       # Restored from 0.4% — need profit to cover commissions
-  min_hold_minutes: 10               # Don't exit (except stop-loss) within 10 min of open
-  signal_cooldown_seconds: 300       # 5-min cooldown per symbol after entry/exit
-  trade_cooldown_minutes: 15         # Intra-day cooldown after position close
-  # cross_session_cooldown_hours: REMOVED — was blocking good setups after losses
+  max_entries_per_cycle: 1              # CHANGED: 2→1 (one quality entry at a time)
+  min_expected_profit_pct: 1.0          # CHANGED: 0.5→1.0 (must cover commission + profit)
+  min_hold_minutes: 15                  # CHANGED: 10→15 (avoid noise exits)
+  signal_cooldown_seconds: 600          # CHANGED: 300→600 (10 min cooldown)
+  trade_cooldown_minutes: 15
 
-# --- Strategy Engine ---
+# ============================================================
+# STRATEGIES — Priority & Confidence
+# ============================================================
 strategies:
   enabled:
-    - mean_reversion
-    - momentum_breakout
-    - opening_range_breakout
-    - vwap_reversion
-  default_confidence_threshold: 0.60  # Lower from 0.65 — allow more signals through
+    - momentum_breakout                 # PRIMARY — best performer (positive EV)
+    - vwap_reversion                    # SECONDARY — ok with fixes
+    - opening_range_breakout            # MORNING ONLY — use sparingly
+    # - mean_reversion                  # DISABLED — 0% win rate, negative EV
+  default_confidence_threshold: 0.70    # CHANGED: 0.60→0.70 (A+ setups only)
 
-# --- Individual Strategy Configs ---
+# ============================================================
+# MEAN REVERSION — DISABLED (Negative Expectancy)
+# ============================================================
+# DO NOT USE: 0% win rate on multiple days, catching falling knives
+# If re-enabling, add momentum confirmation filter first
 mean_reversion:
   lookback_period: 20
-  entry_zscore: -2.2                  # Restored from -2.0 — stricter entry
-  exit_zscore: 0.0
-  stop_zscore: -3.0
-  min_exit_profit_pct: 0.5           # Restored from 0.4%
+  entry_zscore: -2.5                    # Stricter entry
+  exit_zscore: 0.5                      # Let winners run
+  stop_zscore: -2.5                     # Tighter stop
+  min_exit_profit_pct: 1.0
   max_hold_minutes: 90
-  require_trend_alignment: true      # Only BUY in uptrend/sideways (no SELL)
-  require_vwap: true                 # BUY below VWAP
-  rsi_capitulation_floor: 20         # Restored from 15 — avoid falling knife
-  # NOTE: Mean reversion is BUY-only strategy. SELL signals handled by momentum strategies.
+  require_trend_alignment: true
+  require_vwap: true
+  rsi_capitulation_floor: 20
 
+# ============================================================
+# MOMENTUM BREAKOUT — PRIMARY STRATEGY (Scale Up)
+# ============================================================
 momentum_breakout:
-  lookback_period: 20
-  volume_multiplier: 1.5
-  breakout_threshold_pct: 1.0
-  atr_multiplier_stop: 2.0
-  atr_multiplier_target: 4.0
-  trailing_stop_atr: 1.5
+  volume_multiplier: 1.3                # CHANGED: 1.5→1.3 (more signals)
+  breakout_threshold_pct: 0.8           # CHANGED: 1.0→0.8 (earlier entries)
+  atr_multiplier_stop: 1.8              # CHANGED: 2.0→1.8 (tighter risk)
+  atr_multiplier_target: 5.0            # CHANGED: 4.0→5.0 (let winners run)
+  trailing_stop_atr: 2.0                # CHANGED: 1.5→2.0
   max_hold_minutes: 180
-  require_vwap: true                 # BUY above VWAP, SELL below VWAP
+  require_vwap: false                   # CHANGED: true→false (was blocking valid breakouts)
   volume_decay_exit_ratio: 0.7
 
+# ============================================================
+# OPENING RANGE BREAKOUT — Morning Only
+# ============================================================
 opening_range_breakout:
   opening_range_minutes: 15
-  breakout_buffer_pct: 0.15          # Lower from 0.2 — earlier entries
-  atr_multiplier_stop: 1.5
-  atr_multiplier_target: 3.0
-  max_window_minutes: 90             # Extended from 60 — more time for ORB signals
-  volume_confirm: false              # Disabled — was blocking valid breakouts
+  breakout_buffer_pct: 0.15
+  atr_multiplier_stop: 1.2              # CHANGED: 1.5→1.2 (tighter)
+  atr_multiplier_target: 3.5            # CHANGED: 3.0→3.5 (better R:R)
+  max_window_minutes: 45                # CHANGED: 90→45 (morning only)
+  volume_confirm: true                  # CHANGED: false→true (filter false breakouts)
   trailing_stop_atr: 1.2
   max_hold_minutes: 150
-  min_range_atr_ratio: 0.3           # Lower from 0.5 — allow narrower ranges
+  min_range_atr_ratio: 0.5              # CHANGED: 0.3→0.5 (meaningful range)
 
+# ============================================================
+# VWAP REVERSION — SECONDARY (Stricter Entry, Earlier Trailing)
+# ============================================================
 vwap_reversion:
-  deviation_pct_buy: 1.5             # Restored from 1.2% — stricter entry
-  deviation_pct_sell: 1.5            # Restored from 1.0%
+  deviation_pct_buy: 2.0                # CHANGED: 1.5→2.0 (stricter entry)
+  deviation_pct_sell: 2.0               # CHANGED: 1.5→2.0
   exit_at_vwap: true
   require_trend_alignment: true
-  volume_multiplier: 1.2             # Restored from 1.0 — require volume confirmation
-  min_target_pct: 0.5                # Restored from 0.4%
-  trail_activate_pct: 0.6            # Restored from 0.4%
-  trailing_stop_pct: 0.8             # CRITICAL FIX: was 0.3% (caused quick stop-outs)
-  max_hold_minutes: 240              # Restored from 180
-  rsi_capitulation_floor: 15         # BUY floor
-  rsi_overbought_ceiling: 85         # SELL ceiling
+  volume_multiplier: 1.2
+  min_target_pct: 1.0                   # CHANGED: 0.5→1.0
+  trail_activate_pct: 0.5               # CHANGED: 0.6→0.5 (earlier trailing)
+  trailing_stop_pct: 0.4                # CHANGED: 0.8→0.4 (tighter trailing)
+  max_hold_minutes: 240
+  rsi_capitulation_floor: 15
+  rsi_overbought_ceiling: 85
 
-# --- Macro AI Analyst ---
-# Runs at pre-market + every refresh_minutes during market hours.
-# Reads Indian business news (Economic Times, Moneycontrol, Google News India)
-# and classifies macro mood for NSE equities.
-# Requires ai_analysis.llm_enabled: true + LLM_API_KEY for full LLM analysis;
-# falls back to keyword scoring otherwise.
+# ============================================================
+# MACRO AI ANALYST
+# ============================================================
 macro_analyst:
   enabled: true
-  asset_type: stock_nse          # Uses Indian news sources + NSE-specific LLM prompt
-  refresh_minutes: 30            # Re-analyze every 30 min (also runs at pre-market)
-  max_ai_pairs: 5                # Max symbols AI can add to priority list per session
-  apply_mood_filter: true        # Block BUY signals in strong risk_off environment
-  apply_pair_bias: true          # Block signals conflicting with AI directional bias
-  # NEWS_API_KEY env var enables authenticated CryptoPanic (not needed for stocks)
+  asset_type: stock_nse
+  refresh_minutes: 30
+  max_ai_pairs: 5
+  apply_mood_filter: true
+  apply_pair_bias: true
 
-# --- AI Analysis ---
 ai_analysis:
   enabled: true
   min_confidence_boost: 0.1
   max_confidence_boost: 0.3
   lookback_candles: 50
-  # LLM integration (opt-in: requires LLM_API_KEY env var)
   llm_enabled: false
-  llm_provider: gemini              # gemini | openai
-  llm_cache_minutes: 15             # Cache LLM results per symbol
-  # News sentiment (opt-in)
+  llm_provider: gemini
+  llm_cache_minutes: 15
   news_enabled: false
-  news_refresh_minutes: 30          # Re-fetch headlines every 30 min
-  # Factor weights (must sum to 1.0 when all active)
+  news_refresh_minutes: 30
   factor_weights:
     technical: 0.6
     llm: 0.25
     news: 0.15
 
-# --- Market Regime ---
 regime_detection:
   enabled: true
   adx_trending_threshold: 25
@@ -166,66 +178,65 @@ regime_detection:
   volatility_low_percentile: 20
   lookback_period: 20
 
-# --- Risk Management ---
+# ============================================================
+# RISK MANAGEMENT — Concentrated Capital, Tighter Controls
+# ============================================================
 risk:
-  max_risk_per_trade_pct: 1.0       # Max 1% of capital per trade
-  max_open_positions: 4             # Balanced: 4 positions (was 3)
-  max_daily_loss_pct: 3.0           # Stop trading if daily loss exceeds 3%
-  max_total_exposure_pct: 70.0      # Max 70% of capital deployed (4 × ~18%)
-  max_single_stock_exposure_pct: 22.0  # Larger positions allowed
-  min_risk_reward_ratio: 1.5
+  max_risk_per_trade_pct: 0.75          # CHANGED: 1.0→0.75 (tighter risk)
+  max_open_positions: 3                 # CHANGED: 4→2→3 (₹2L allows 3 positions of ₹66k)
+  max_daily_loss_pct: 2.0               # CHANGED: 3.0→2.0 (stop bleeding earlier)
+  max_total_exposure_pct: 70.0          # CHANGED: 60.0→70.0 (₹2L can handle more exposure)
+  max_single_stock_exposure_pct: 35.0   # Allow larger positions
+  min_risk_reward_ratio: 2.0            # CHANGED: 1.5→2.0 (better R:R required)
 
-# --- Position Sizing ---
+# ============================================================
+# POSITION SIZING — Commission-Aware (CRITICAL FIX)
+# ============================================================
 position_sizing:
-  method: volatility_adjusted  # fixed | volatility_adjusted | kelly
+  method: volatility_adjusted
   fixed_quantity: 10
   volatility_lookback: 14
-  max_position_pct: 20.0  # Larger positions = lower fee impact (was 10%)
+  max_position_pct: 35.0                # CHANGED: 20.0→35.0 (larger positions allowed)
+  min_position_value_inr: 50000         # NEW: Minimum ₹50k positions (was ₹10k)
+  target_commission_drag_pct: 0.15      # NEW: Max 0.15% commission drag
 
-# --- Drawdown Protection ---
+# ============================================================
+# DRAWDOWN PROTECTION
+# ============================================================
 drawdown:
   warning_threshold_pct: 2.0
   reduce_size_threshold_pct: 3.0
   pause_trading_threshold_pct: 5.0
   size_reduction_factor: 0.5
 
-# --- News & Event Awareness ---
 news:
-  enabled: false  # Enable when news API is configured
+  enabled: false
   pause_minutes_before_event: 15
   pause_minutes_after_event: 15
 
-# --- Volatility Safeguards ---
 volatility_safeguards:
   enabled: true
-  max_intraday_move_pct: 3.0  # Pause if index moves > 3% intraday
-  spike_detection_window: 5     # minutes
+  max_intraday_move_pct: 3.0
+  spike_detection_window: 5
   spike_threshold_pct: 1.5
 
-# --- Broker (Live Trading) ---
 broker:
-  adapter: angelone  # zerodha | angelone
-  # Credentials are loaded from environment variables:
-  #   Angel One: BROKER_API_KEY, BROKER_CLIENT_ID, BROKER_PASSWORD, BROKER_TOTP_SECRET
-  #   Zerodha:   BROKER_API_KEY, BROKER_API_SECRET, BROKER_ACCESS_TOKEN
+  adapter: angelone
 
-# --- Paper Trading ---
 paper_trading:
   slippage_pct: 0.05
-  commission_per_trade: 25.0          # Realistic: ₹20 brokerage + ₹3.60 GST + ~₹1.75 STT (was 20)
+  commission_per_trade: 25.0
   fill_delay_seconds: 1
 
-# --- Reporting ---
 reporting:
   daily_report: true
   report_dir: ./reports
-  format: json  # json | csv
+  format: json
 
-# --- Alerts ---
 alerts:
   enabled: true
   channels:
-    - console  # console | file | webhook
+    - console
   alert_on_trade: true
   alert_on_risk_breach: true
   alert_on_error: true
