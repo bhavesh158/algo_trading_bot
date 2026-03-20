@@ -61,11 +61,11 @@ selection:
 # --- Scheduler / Anti-Churn ---
 scheduler:
   max_entries_per_cycle: 2           # Max new positions per cycle (prevents correlated batch entries)
-  min_expected_profit_pct: 0.4       # Lower from 0.5% — allow more signals
+  min_expected_profit_pct: 0.5       # Restored from 0.4% — need profit to cover commissions
   min_hold_minutes: 10               # Don't exit (except stop-loss) within 10 min of open
   signal_cooldown_seconds: 300       # 5-min cooldown per symbol after entry/exit
   trade_cooldown_minutes: 15         # Intra-day cooldown after position close
-  cross_session_cooldown_hours: 2    # Cross-session cooldown for symbols that exited with loss
+  # cross_session_cooldown_hours: REMOVED — was blocking good setups after losses
 
 # --- Strategy Engine ---
 strategies:
@@ -79,15 +79,15 @@ strategies:
 # --- Individual Strategy Configs ---
 mean_reversion:
   lookback_period: 20
-  entry_zscore: -2.0                  # Less strict from -2.2 — more entry opportunities
+  entry_zscore: -2.2                  # Restored from -2.0 — stricter entry
   exit_zscore: 0.0
   stop_zscore: -3.0
-  min_exit_profit_pct: 0.4           # Lower from 0.5% — easier exits
+  min_exit_profit_pct: 0.5           # Restored from 0.4%
   max_hold_minutes: 90
-  require_trend_alignment: true      # BUY in uptrend/sideways, SELL in downtrend
-  require_vwap: true                 # BUY below VWAP, SELL above VWAP
-  rsi_capitulation_floor: 15         # Lower from 20 — catch deeper oversold
-  rsi_overbought_ceiling: 80         # NEW: for SELL signals
+  require_trend_alignment: true      # Only BUY in uptrend/sideways (no SELL)
+  require_vwap: true                 # BUY below VWAP
+  rsi_capitulation_floor: 20         # Restored from 15 — avoid falling knife
+  # NOTE: Mean reversion is BUY-only strategy. SELL signals handled by momentum strategies.
 
 momentum_breakout:
   lookback_period: 20
@@ -112,15 +112,15 @@ opening_range_breakout:
   min_range_atr_ratio: 0.3           # Lower from 0.5 — allow narrower ranges
 
 vwap_reversion:
-  deviation_pct_buy: 1.2             # Lower from 1.5% — easier BUY triggers
-  deviation_pct_sell: 1.0            # NEW: even lower for SELL (crash days)
+  deviation_pct_buy: 1.5             # Restored from 1.2% — stricter entry
+  deviation_pct_sell: 1.5            # Restored from 1.0%
   exit_at_vwap: true
   require_trend_alignment: true
-  volume_multiplier: 1.0             # Lower from 1.2 — easier triggers
-  min_target_pct: 0.4                # Lower from 0.5%
-  trail_activate_pct: 0.4            # Lower from 0.5%
-  trailing_stop_pct: 0.3
-  max_hold_minutes: 180              # Lower from 240
+  volume_multiplier: 1.2             # Restored from 1.0 — require volume confirmation
+  min_target_pct: 0.5                # Restored from 0.4%
+  trail_activate_pct: 0.6            # Restored from 0.4%
+  trailing_stop_pct: 0.8             # CRITICAL FIX: was 0.3% (caused quick stop-outs)
+  max_hold_minutes: 240              # Restored from 180
   rsi_capitulation_floor: 15         # BUY floor
   rsi_overbought_ceiling: 85         # SELL ceiling
 

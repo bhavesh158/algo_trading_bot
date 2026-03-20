@@ -56,9 +56,10 @@ class TradingScheduler:
         self._symbol_cooldown: dict[str, datetime] = {}  # symbol -> cooldown_end
         
         # Cross-session cooldown: track last exit time per symbol ACROSS days
-        # This prevents re-entering a symbol that caused a loss on the previous day
-        self._symbol_last_exit: dict[str, datetime] = {}  # symbol -> last_exit_time
-        self._cross_session_cooldown_hours = sched_config.get("cross_session_cooldown_hours", 2)
+        # DISABLED: This was forcing the strategy to take inferior signals from less
+        # optimal stocks because the best setups were on cooldown after day-1 losses.
+        # self._symbol_last_exit: dict[str, datetime] = {}
+        # self._cross_session_cooldown_hours = sched_config.get("cross_session_cooldown_hours", 4)
 
         logger.info("TradingScheduler initialized (open=%s, close=%s)",
                      self._market_open.strftime("%H:%M"), self._market_close.strftime("%H:%M"))
@@ -327,22 +328,6 @@ class TradingScheduler:
                 else:
                     del self._symbol_cooldown[signal.symbol]
 
-            # Skip if symbol is in cross-session cooldown (exited with loss recently)
-            last_exit = self._symbol_last_exit.get(signal.symbol)
-            if last_exit is not None:
-                cooldown_end_cross = last_exit + timedelta(hours=self._cross_session_cooldown_hours)
-                if datetime.now() < cooldown_end_cross:
-                    logger.debug(
-                        "Signal suppressed (cross-session cooldown): %s until %s "
-                        "(exited at %s)",
-                        signal.symbol, cooldown_end_cross.strftime("%H:%M:%S"),
-                        last_exit.strftime("%Y-%m-%d %H:%M:%S"),
-                    )
-                    continue
-                else:
-                    # Expired — remove from tracking
-                    del self._symbol_last_exit[signal.symbol]
-
             # Skip if already have a position in this symbol
             if signal.symbol in system.portfolio_manager.get_open_position_symbols():
                 continue
@@ -471,21 +456,6 @@ class TradingScheduler:
                     logger.debug(
                         "Intra-day cooldown set for %s: %d min", symbol, self._cooldown_minutes
                     )
-                    
-                    # Apply cross-session cooldown if position exited with a loss
-                    # This prevents re-entering a losing position on the same/next day
-                    if trade.pnl < 0:
-                        self._symbol_last_exit[symbol] = datetime.now()
-                        logger.info(
-                            "Cross-session cooldown set for %s: %d hours (loss=%.2f)",
-                            symbol, self._cross_session_cooldown_hours, trade.pnl,
-                        )
-                    # Clean up old entries (older than 24 hours)
-                    cutoff = datetime.now() - timedelta(hours=24)
-                    self._symbol_last_exit = {
-                        s: t for s, t in self._symbol_last_exit.items()
-                        if t > cutoff
-                    }
 
         # Evaluate strategy performance periodically
         underperforming = system.performance_monitor.evaluate_strategies()

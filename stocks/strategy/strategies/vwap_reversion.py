@@ -35,25 +35,25 @@ class VWAPReversionStrategy(BaseStrategy):
         super().__init__("vwap_reversion", config, market_data)
 
         strat_config = config.get("vwap_reversion", {})
-        # Lower defaults for easier triggers
-        self._deviation_pct_buy = strat_config.get("deviation_pct_buy", 1.2)  # Lower from 1.5%
-        self._deviation_pct_sell = strat_config.get("deviation_pct_sell", 1.0)  # Even lower for SELL
+        # Restored conservative defaults after 2026-03-19 losses
+        self._deviation_pct_buy = strat_config.get("deviation_pct_buy", 1.5)  # Restored from 1.2%
+        self._deviation_pct_sell = strat_config.get("deviation_pct_sell", 1.5)  # Restored from 1.0%
         self._exit_at_vwap = strat_config.get("exit_at_vwap", True)
         self._require_trend = strat_config.get("require_trend_alignment", True)
-        self._volume_multiplier = strat_config.get("volume_multiplier", 1.0)  # Lower from 1.2 (easier trigger)
-        self._min_target_pct = strat_config.get("min_target_pct", 0.4)  # Lower from 0.5%
+        self._volume_multiplier = strat_config.get("volume_multiplier", 1.2)  # Restored from 1.0
+        self._min_target_pct = strat_config.get("min_target_pct", 0.5)  # Restored from 0.4%
         self.primary_timeframe = Timeframe.M5
 
         # RSI thresholds
         self._rsi_capitulation_floor = strat_config.get("rsi_capitulation_floor", 15)  # BUY floor
         self._rsi_overbought_ceiling = strat_config.get("rsi_overbought_ceiling", 85)  # SELL ceiling
 
-        # Trailing stop with activation threshold
-        self._trail_activate_pct: float = strat_config.get("trail_activate_pct", 0.4)  # Lower from 0.5%
-        self._trailing_stop_pct: float = strat_config.get("trailing_stop_pct", 0.3)
+        # Trailing stop with activation threshold (restored after tight stops caused losses)
+        self._trail_activate_pct: float = strat_config.get("trail_activate_pct", 0.6)  # Restored from 0.4%
+        self._trailing_stop_pct: float = strat_config.get("trailing_stop_pct", 0.8)  # CRITICAL FIX: was 0.3%
 
         # Time exit: safety net
-        self._max_hold_minutes = strat_config.get("max_hold_minutes", 180)  # Lower from 240
+        self._max_hold_minutes = strat_config.get("max_hold_minutes", 240)  # Restored from 180
 
     def _get_vwap(self, symbol: str) -> Optional[float]:
         """Get current VWAP value."""
