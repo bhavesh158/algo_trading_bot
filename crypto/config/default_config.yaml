@@ -84,31 +84,31 @@ strategies:
     - trend_following
     - mean_reversion
     - breakout_momentum
-  default_confidence_threshold: 0.65   # Higher quality signals only (was 0.55)
-  sell_confidence_threshold: 0.75      # Higher bar for shorts (was 0.65)
+  default_confidence_threshold: 0.55   # was 0.6 — strategies rarely exceeded 0.60
+  sell_confidence_threshold: 0.65      # Higher bar for shorts than longs (0.55); BTC filter already blocks shorting uptrends
   # Signal burst limiter — prevents correlated batch entries
   signal_burst_window_seconds: 600      # 10 min rolling window
-  max_signals_per_window: 3             # Reduced from 5 — fewer correlated entries
-  per_symbol_cooldown_seconds: 1200     # 20 min between signals for same symbol (was 15 min)
+  max_signals_per_window: 5             # Max signals in the window (was 3)
+  per_symbol_cooldown_seconds: 900      # 15 min between signals for same symbol
   # BTC market direction filter (symmetric):
   #   BTC bearish -> block BUY  (don't buy into a downtrend)
   #   BTC bullish -> block SELL (don't short into an uptrend)
   btc_trend_filter_enabled: true
   btc_trend_symbol: "BTC/USDT"
   btc_trend_timeframe: "1h"
-  max_same_direction_positions: 2  # Reduced from 3 — less correlated risk
+  max_same_direction_positions: 3  # Max simultaneous BUY (or SELL) positions — limits correlated losses
 
 # --- Individual Strategy Configs ---
 trend_following:
   fast_ema: 9
   slow_ema: 21
   adx_threshold: 25               # was 30 — more signals in moderate trends
-  atr_multiplier_stop: 3.5         # Wider stops — avoid noise stop-outs (was 2.5)
-  atr_multiplier_target: 6.0       # Let trends run — need bigger winners to cover tax (was 4.0)
+  atr_multiplier_stop: 2.5         # Wider stops — fewer premature stop-outs (was 2.0)
+  atr_multiplier_target: 4.0       # Let trends run (was 3.0)
   require_htf_alignment: true      # 1h EMA trend must agree with 15m signal
   # volume_confirm_mult removed — was blocking valid crossovers in low-vol
-  trailing_stop_atr_multiplier: 2.5  # Wider trailing (was 2.0)
-  max_hold_minutes: 480            # 8 hours max (was 6h — let trends develop)
+  trailing_stop_atr_multiplier: 2.0
+  max_hold_minutes: 360            # 6 hours max
 
 mean_reversion:
   bb_period: 20
@@ -116,26 +116,26 @@ mean_reversion:
   rsi_period: 14
   rsi_oversold: 30                 # was 25 — widens signal window
   rsi_overbought: 70               # was 75 — widens signal window
-  atr_multiplier_stop: 2.0         # Wider stops — avoid noise (was 1.5)
-  atr_multiplier_target: 4.0       # Bigger targets — need to cover tax (was 3.0)
+  atr_multiplier_stop: 1.5
+  atr_multiplier_target: 3.0       # Wider targets — let reversion play out (was 2.0)
   # volume_confirm_mult removed — was blocking strategy entirely in low-vol
-  min_exit_profit_pct: 0.5         # Exit faster when thesis is wrong (was 1.0%)
+  min_exit_profit_pct: 1.0         # Don't strategy-exit below 1.0% profit (covers fees+tax+risk)
   trend_filter_enabled: true       # Skip BUY in downtrend, SELL in uptrend (EMA9 vs EMA21)
   rsi_capitulation_floor: 15       # Skip entry if RSI < 15 (free-fall)
   rsi_capitulation_ceiling: 85     # Skip entry if RSI > 85 (vertical pump)
-  trailing_stop_atr_multiplier: 2.0  # Wider trailing (was 1.5)
-  max_hold_minutes: 180            # 3 hours max (was 2h — more time to work)
+  trailing_stop_atr_multiplier: 1.5
+  max_hold_minutes: 120            # 2 hours max
 
 breakout_momentum:
   lookback_period: 20
-  volume_multiplier: 2.0           # Higher volume confirmation — fewer false breakouts (was 1.5)
-  breakout_buffer_pct: 0.15        # Slightly wider buffer (was 0.1)
-  atr_multiplier_stop: 3.0         # Wider stops — avoid noise (was 2.0)
-  atr_multiplier_target: 5.0       # Bigger targets — need to cover tax (was 3.0)
+  volume_multiplier: 1.5           # Slightly easier trigger (was 2.0)
+  breakout_buffer_pct: 0.1         # Tighter breakout zone (was 0.2)
+  atr_multiplier_stop: 2.0
+  atr_multiplier_target: 3.0
   volume_decay_threshold: 0.5      # Exit if volume < 50% avg for N candles
   volume_decay_candles: 3          # Number of consecutive low-volume candles to trigger exit
-  trailing_stop_atr_multiplier: 2.5  # Wider trailing (was 1.5)
-  max_hold_minutes: 600            # 10 hours max (was 8h — more time for momentum)
+  trailing_stop_atr_multiplier: 1.5
+  max_hold_minutes: 480            # 8 hours max
 
 # --- Macro AI Analyst ---
 # Runs every `refresh_minutes` to scan news + Fear&Greed and produce a MacroContext.
@@ -191,8 +191,7 @@ position_sizing:
   method: volatility_adjusted  # fixed | volatility_adjusted
   fixed_quantity: 0.001        # BTC equivalent default
   volatility_lookback: 14
-  max_position_pct: 20.0       # Increased from 15% — larger positions, less fee drag
-  min_position_pct: 10.0       # NEW: Ensure meaningful position sizes
+  max_position_pct: 15.0
 
 # --- Drawdown Protection ---
 drawdown:

@@ -63,15 +63,8 @@ class CcxtProvider:
 
     def fetch_ohlcv(
         self, symbol: str, timeframe: str, limit: int = 200,
-        since_ms: Optional[int] = None,
     ) -> pd.DataFrame:
         """Fetch OHLCV candle data for a symbol.
-
-        Args:
-            symbol: Trading pair (e.g., BTC/USDT).
-            timeframe: Candle timeframe (5m, 15m, 1h, etc.).
-            limit: Max candles to fetch (exchange-dependent, typically 500-1000).
-            since_ms: Optional timestamp in ms to fetch candles from.
 
         Returns a DataFrame with columns: timestamp, open, high, low, close, volume.
         """
@@ -79,11 +72,7 @@ class CcxtProvider:
             return pd.DataFrame()
 
         try:
-            kwargs = {"limit": limit}
-            if since_ms:
-                kwargs["since"] = since_ms
-                
-            raw = self._exchange.fetch_ohlcv(symbol, timeframe, **kwargs)
+            raw = self._exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
             if not raw:
                 return pd.DataFrame()
 
