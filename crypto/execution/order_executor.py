@@ -98,3 +98,21 @@ class OrderExecutor:
                 if self.cancel_order(oid):
                     cancelled += 1
         return cancelled
+
+    def get_live_balance(self) -> float:
+        """Fetch live USDT balance from exchange (live mode only).
+        
+        Returns:
+            Live USDT balance if available, 0.0 if paper mode or fetch fails.
+        """
+        if self.mode != TradingMode.LIVE or self._exchange_adapter is None:
+            return 0.0
+        
+        try:
+            balance = self._exchange_adapter.get_balance()
+            usdt_balance = balance.get("USDT", 0.0)
+            logger.debug("Live exchange balance: USDT %.2f", usdt_balance)
+            return usdt_balance
+        except Exception:
+            logger.exception("Failed to fetch live balance")
+            return 0.0

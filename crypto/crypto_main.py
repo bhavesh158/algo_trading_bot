@@ -88,7 +88,8 @@ class CryptoTradingSystem:
 
         # Instantiate all components
         self.alert_manager = AlertManager(self.config, self.event_bus)
-        self.portfolio_manager = PortfolioManager(self.config, self.event_bus)
+        self.order_executor = OrderExecutor(self.config, self.event_bus, self.mode)
+        self.portfolio_manager = PortfolioManager(self.config, self.event_bus, self.order_executor)
         self.risk_manager = RiskManager(self.config, self.event_bus, self.portfolio_manager)
         self.position_sizer = PositionSizer(self.config, self.event_bus, self.portfolio_manager)
         self.drawdown_monitor = DrawdownMonitor(self.config, self.event_bus, self.portfolio_manager)
@@ -97,7 +98,6 @@ class CryptoTradingSystem:
         self.regime_detector = RegimeDetector(self.config, self.event_bus)
         self.ai_analysis = AIAnalysis(self.config, self.event_bus)
         self.volatility_monitor = VolatilityMonitor(self.config, self.event_bus)
-        self.order_executor = OrderExecutor(self.config, self.event_bus, self.mode)
         self.strategy_engine = StrategyEngine(
             self.config, self.event_bus, self.risk_manager,
             self.position_sizer, self.ai_analysis, self.regime_detector,
@@ -114,6 +114,8 @@ class CryptoTradingSystem:
             adapter = CcxtExchangeAdapter(exchange_name, self.config)
             if adapter.connect():
                 self.order_executor.set_exchange_adapter(adapter)
+                # Sync capital with actual exchange balance
+                self.portfolio_manager.sync_live_capital()
             else:
                 raise RuntimeError("Failed to connect exchange adapter for live trading")
 

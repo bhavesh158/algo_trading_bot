@@ -23,9 +23,10 @@ logger = logging.getLogger(__name__)
 class PortfolioManager:
     """Tracks positions, capital, and portfolio state."""
 
-    def __init__(self, config: dict[str, Any], event_bus: EventBus) -> None:
+    def __init__(self, config: dict[str, Any], event_bus: EventBus, order_executor: Any | None = None) -> None:
         self.config = config
         self.event_bus = event_bus
+        self.order_executor = order_executor  # For fetching live balance
         self.state_manager = StateManager(config)
         self.ledger = CapitalLedger(config)
 
@@ -243,6 +244,39 @@ class PortfolioManager:
     def get_open_position_symbols(self) -> set[str]:
         """Return symbols with open positions (used by pair selector)."""
         return {s for s, p in self._positions.items() if p.status == PositionStatus.OPEN}
+
+    def sync_live_capital(self) -> None:
+        """Sync capital with live exchange balance.
+        
+        In live mode, fetches actual USDT balance from exchange and updates
+        portfolio capital to reflect reality (not paper trading history).
+        
+        Should be called after exchange adapter is connected.
+        """
+        if self.order_executor is None:
+            logger.debug("No order executor — skipping live capital sync")
+            return
+        
+        live_balance = self.order_executor.get_live_balance()
+        if live_balance <= 0:
+            logger.warning("Live balance fetch returned %.2f — keeping existing capital %.2f",
+                          live_balance, self._total_capital)
+            return
+        
+        # Calculate total equity including open positions
+        open_positions = self.get_open_positions()
+        positions_value = sum(p.current_price * p.quantity for p in open_positions.values())
+        total_equity = live_balance + positions_value
+        
+        old_capital = self._total_capital
+        self._total_capital = total_equity
+        self._available_capital = live_balance
+        self._peak_capital = max(self._peak_capital, total_equity)
+        
+        logger.info(
+            "Live capital sync: exchange_balance=%.2f + positions=%.2f = total=%.2f (was %.2f)",
+            live_balance, positions_value, total_equity, old_capital,
+        )
 
     def _publish_update(self) -> None:
         state = self.get_state()
