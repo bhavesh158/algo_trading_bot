@@ -72,7 +72,9 @@ class CcxtExchangeAdapter(BaseExchangeAdapter):
             order_type = self._map_order_type(order.order_type)
 
             params = {}
-            if order.stop_price > 0:
+            # Stop price only for STOP_LOSS / STOP_LOSS_LIMIT orders
+            # MARKET orders cannot have stop prices on Binance (would trigger immediately)
+            if order.stop_price > 0 and order.order_type in (OrderType.STOP_LOSS, OrderType.STOP_LOSS_LIMIT):
                 params["stopPrice"] = order.stop_price
 
             result = self._exchange.create_order(
