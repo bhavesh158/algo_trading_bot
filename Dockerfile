@@ -12,6 +12,7 @@ COPY crypto/requirements.txt /app/crypto/requirements.txt
 RUN pip install --no-cache-dir -r /app/crypto/requirements.txt
 
 # Copy source code
+COPY common/ /app/common/
 COPY crypto/ /app/crypto/
 
 # Data and state persist via volume mount

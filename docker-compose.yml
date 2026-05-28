@@ -9,6 +9,10 @@ services:
     env_file:
       - .env
 
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+
     # Status API port (only used when CRYPTO_TRADING__api__enabled=true)
     ports:
       - "${CRYPTO_API_PORT:-8599}:${CRYPTO_API_PORT:-8599}"

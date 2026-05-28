@@ -84,7 +84,7 @@ strategies:
     - vwap_reversion                    # SECONDARY — ok with fixes
     - opening_range_breakout            # MORNING ONLY — use sparingly
     # - mean_reversion                  # DISABLED — 0% win rate, negative EV
-  default_confidence_threshold: 0.70    # CHANGED: 0.60→0.70 (A+ setups only)
+  default_confidence_threshold: 0.50    # REDUCED FOR TESTING (was 0.70)
 
 # ============================================================
 # MEAN REVERSION — DISABLED (Negative Expectancy)
@@ -153,7 +153,7 @@ macro_analyst:
   asset_type: stock_nse
   refresh_minutes: 30
   max_ai_pairs: 5
-  apply_mood_filter: true
+  apply_mood_filter: false              # DISABLED FOR TESTING (was true)
   apply_pair_bias: true
 
 ai_analysis:
