@@ -131,3 +131,18 @@ class DrawdownMonitor:
         if self._is_size_reduced:
             return self._reduction_factor
         return 1.0
+
+    def reset_daily_state(self) -> None:
+        """Clear protective flags at the start of each trading day.
+
+        Without this a latched pause / size-reduction would persist until equity
+        recovers below the 2% threshold — which, with a per-day-resetting
+        intraday strategy, could permanently halt trading after one bad day.
+        """
+        if self._is_paused or self._is_size_reduced:
+            logger.info(
+                "Daily risk state reset — clearing latched pause/size-reduction "
+                "(paused=%s, size_reduced=%s)", self._is_paused, self._is_size_reduced,
+            )
+        self._is_paused = False
+        self._is_size_reduced = False

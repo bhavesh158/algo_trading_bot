@@ -91,6 +91,9 @@ class Order:
     filled_price: float = 0.0
     filled_quantity: int = 0
     timestamp: datetime = field(default_factory=datetime.now)
+    service_origin: str = ""  # "intra_day" or "position_trader" or other service name
+    error_code: str = ""      # Broker error code (e.g., "AB4036" for cautionary listing)
+    error_message: str = ""   # Broker error message
 
 
 @dataclass
@@ -115,6 +118,7 @@ class Position:
     highest_since_entry: float = 0.0   # Tracks peak price for long trailing stop
     lowest_since_entry: float = 0.0    # Tracks trough price for short trailing stop
     max_hold_minutes: int = 0          # Max hold duration (0 = no limit)
+    service_origin: str = ""  # Service that opened this position: "intra_day", "position_trader", etc.
 
     def update_extremes(self, price: float) -> None:
         """Update highest/lowest price since entry for trailing stop."""

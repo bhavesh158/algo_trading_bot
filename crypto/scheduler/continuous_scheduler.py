@@ -11,7 +11,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from crypto.core.enums import OrderSide, OrderType
+from crypto.core.enums import OrderSide, OrderStatus, OrderType, TradingMode
 from crypto.core.event_bus import EventBus
 from crypto.core.models import Order
 
@@ -392,17 +392,52 @@ class ContinuousScheduler:
             underperformers = system.performance_monitor.evaluate_strategies()
             for sid in underperformers:
                 system.strategy_engine.disable_strategy(sid)
+            # Re-enable strategies whose disable cooldown has expired
+            reenable = system.performance_monitor.strategies_to_reenable()
+            for sid in reenable:
+                system.strategy_engine.enable_strategy(sid)
 
     def _close_position(
         self, system: Any, symbol: str, current_price: float, pos: Any, reason: str,
     ) -> None:
-        """Close a position and release the symbol — release always happens first."""
-        commission = system.order_executor.get_commission(current_price * pos.quantity)
-        trade = system.portfolio_manager.close_position(symbol, current_price, commission)
+        """Close a position and release the symbol.
+
+        Live mode: place a real market exit order first, then mark the position
+        closed with the actual fill price. Paper mode: simulate at current price.
+        The executor symbol lock is released first so the exit order is accepted.
+        """
+        system.order_executor.release_symbol(symbol)
+
+        if system.order_executor.mode == TradingMode.LIVE:
+            exit_order = Order(
+                symbol=symbol,
+                side=OrderSide.SELL if pos.side == OrderSide.BUY else OrderSide.BUY,
+                order_type=OrderType.MARKET,
+                quantity=pos.quantity,
+                price=current_price,
+                strategy_id=pos.strategy_id,
+            )
+            exit_order = system.order_executor.execute_order(exit_order, current_price)
+            if exit_order.status != OrderStatus.FILLED:
+                # Re-lock the symbol so a duplicate entry can't fire while the
+                # position is still open; the exit will be retried next cycle.
+                system.order_executor.register_active_symbol(symbol)
+                logger.error(
+                    "EXIT ORDER FAILED for %s (reason=%s): status=%s — position kept open",
+                    symbol, reason, exit_order.status.name,
+                )
+                return
+            exit_price = exit_order.filled_price if exit_order.filled_price > 0 else current_price
+        else:
+            exit_price = current_price
+
+        commission = system.order_executor.get_commission(exit_price * pos.quantity)
+        trade = system.portfolio_manager.close_position(symbol, exit_price, commission)
+        # A filled exit order re-adds the symbol lock (execute_order registers it),
+        # so release again now that the position is closed to allow re-entry.
+        system.order_executor.release_symbol(symbol)
         if not trade:
             return
-        # Release symbol FIRST — this is critical, other calls are best-effort
-        system.order_executor.release_symbol(symbol)
         # Record cooldown to prevent immediate re-entry and persist to disk
         self._recently_closed[symbol] = datetime.now(timezone.utc)
         try:

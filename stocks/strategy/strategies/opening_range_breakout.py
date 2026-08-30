@@ -34,12 +34,12 @@ class OpeningRangeBreakoutStrategy(BaseStrategy):
         strat_config = config.get("opening_range_breakout", {})
         self._or_minutes = strat_config.get("opening_range_minutes", 15)
         self._buffer_pct = strat_config.get("breakout_buffer_pct", 0.15)  # Lower from 0.2
-        self._atr_stop = strat_config.get("atr_multiplier_stop", 1.5)
-        self._atr_target = strat_config.get("atr_multiplier_target", 3.0)
+        self._atr_stop = strat_config.get("atr_multiplier_stop", 4.0)  # CHANGED: 1.5→4.0 for wider stops
+        self._atr_target = strat_config.get("atr_multiplier_target", 6.0)  # CHANGED: 3.0→6.0 for wider targets
         self._max_window_minutes = strat_config.get("max_window_minutes", 90)  # Extended from 60
         self._volume_confirm = strat_config.get("volume_confirm", False)  # Disabled by default
         self._min_range_atr_ratio = strat_config.get("min_range_atr_ratio", 0.3)  # Lower from 0.5
-        self.primary_timeframe = Timeframe.M1
+        self.primary_timeframe = Timeframe.M15  # CHANGED: Use 15-min for ATR (1-min gives too-tight stops)
 
         # Enable trailing stop and time exit from base class
         self._trailing_stop_atr = strat_config.get("trailing_stop_atr", 1.2)

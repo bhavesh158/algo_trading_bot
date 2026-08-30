@@ -16,8 +16,9 @@ import sys
 from typing import Any
 
 from crypto.config.settings import load_config, get_nested
-from crypto.core.enums import TradingMode
+from crypto.core.enums import OrderSide, OrderStatus, OrderType, TradingMode
 from crypto.core.event_bus import EventBus
+from crypto.core.models import Order
 from crypto.utils.logger import setup_logging
 from crypto.utils.security import validate_live_trading_prerequisites
 
@@ -225,8 +226,32 @@ class CryptoTradingSystem:
                     logger.error("Cannot get price for %s — position kept in state file for recovery", symbol)
                     continue
 
-                commission = self.order_executor.get_commission(current_price * pos.quantity)
-                trade = self.portfolio_manager.close_position(symbol, current_price, commission)
+                exit_price = current_price
+                if self.mode == TradingMode.LIVE:
+                    # Release symbol lock so the exit order is accepted, then
+                    # place a real market exit order before marking closed.
+                    self.order_executor.release_symbol(symbol)
+                    exit_order = Order(
+                        symbol=symbol,
+                        side=OrderSide.SELL if pos.side == OrderSide.BUY else OrderSide.BUY,
+                        order_type=OrderType.MARKET,
+                        quantity=pos.quantity,
+                        price=current_price,
+                        strategy_id=pos.strategy_id,
+                    )
+                    exit_order = self.order_executor.execute_order(exit_order, current_price)
+                    if exit_order.status != OrderStatus.FILLED:
+                        self.order_executor.register_active_symbol(symbol)
+                        logger.error(
+                            "Exit order FAILED for %s: status=%s — position kept in state file",
+                            symbol, exit_order.status.name,
+                        )
+                        continue
+                    if exit_order.filled_price > 0:
+                        exit_price = exit_order.filled_price
+
+                commission = self.order_executor.get_commission(exit_price * pos.quantity)
+                trade = self.portfolio_manager.close_position(symbol, exit_price, commission)
                 if trade:
                     self.trade_journal.log_close(trade)
                     self.order_executor.release_symbol(symbol)

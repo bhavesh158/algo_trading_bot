@@ -1,0 +1,202 @@
+# ============================================================
+# Position Trading — Multi-Day Stock Trading Configuration
+# ============================================================
+# 
+# This configuration enables multi-day/overnight stock holding.
+# Set square_off_at_pre_close=false and reset_daily_state_on_new_day=false
+# to allow positions to carry across days.
+#
+# Compared to the intra-day config (default_config.yaml):
+# - max_hold_minutes: 0 (no time limit) instead of 90/180/150/240
+# - square_off_at_pre_close: false (no forced square-off at 15:07)
+# - reset_daily_state_on_new_day: false (carry P&L/capital across days)
+# - min_expected_profit_pct: 0.5 (lower threshold, suitable for longer holds)
+# - max_entries_per_cycle: 2 (allow more entries per cycle)
+# ============================================================
+
+system:
+  mode: live           # Live mode with real AngelOne broker
+  timezone: Asia/Kolkata
+  log_level: INFO
+  data_dir: ./data_store_position
+  market: NSE
+
+schedule:
+  pre_market_start: "08:45"
+  market_open: "09:15"
+  market_close: "15:30"
+  pre_close_start: "15:07"
+  post_market_end: "16:00"
+  # NSE public holidays (ISO dates) when the market is closed. Weekends are
+  # handled automatically. Update as needed for the current year.
+  nse_holidays: []
+
+market_data:
+  provider: yahoo
+  timeframes:
+    - 1m
+    - 5m
+    - 15m
+  history_days: 30
+  update_interval_seconds: 5
+
+selection:
+  # Positional service trades different stocks than intraday
+  # Focus on strong fundamental stocks suitable for multi-day holds
+  positional_symbols:
+    - "RELIANCE.NS"
+    - "TCS.NS"
+    - "HDFCBANK.NS"
+    - "INFY.NS"
+    - "ICICIBANK.NS"
+    - "HINDUNILVR.NS"
+    - "ITC.NS"
+    - "SBIN.NS"
+    - "BHARTIARTL.NS"
+    - "KOTAKBANK.NS"
+    - "LT.NS"
+    - "AXISBANK.NS"
+    - "BAJFINANCE.NS"
+    - "ASIANPAINT.NS"
+    - "MARUTI.NS"
+    - "TITAN.NS"
+    - "SUNPHARMA.NS"
+    - "WIPRO.NS"
+    - "HCLTECH.NS"
+    - "NTPC.NS"
+  min_volume: 500000
+  min_price: 50.0
+  max_price: 10000.0
+  max_watchlist_size: 20
+
+account:
+  initial_capital: 100000.0     # ₹1L capital
+  currency: INR
+  profit_tax_pct: 15.0
+
+# ============================================================
+# BROKER — AngelOne Live Trading Charges
+# ============================================================
+broker:
+  adapter: angelone
+  order_fill_timeout_seconds: 20   # max time to poll for a live order fill
+  order_poll_interval_seconds: 3   # interval between fill status polls
+  # Flat per-leg broker charge applied in live mode so the bot's P&L tracks the
+  # broker statement. Derived from 2026-08-13: ₹240.64 total / 10 legs
+  # (5 opens + 5 closes) ≈ ₹24.06. Tune as turnover/charges change.
+  live_commission_per_trade: 24.06
+
+execution:
+  # Blacklist: symbols blocked by exchange (cautionary listings)
+  blacklisted_symbols:
+    - "VEDL.NS"
+    - "ETERNAL.NS"
+    - "JIOFIN.NS"
+
+# ============================================================
+# SCHEDULER — Position Trading Controls
+# ============================================================
+scheduler:
+  max_entries_per_cycle: 2              # Allow 2 entries per cycle (vs 1 in intraday)
+  min_expected_profit_pct: 0.5          # Lower threshold for longer holds
+  min_hold_minutes: 15                  # Avoid noise exits — minimum hold before strategy can exit
+  startup_hold_minutes: 10              # Block entry signals on service start (prevents duplicate trading at market open)
+  signal_cooldown_seconds: 600          # 10 min cooldown
+  trade_cooldown_minutes: 15
+  exit_cooldown_seconds: 60               # Prevent duplicate exit orders within 60s
+  service_origin: position_trader       # Service identifier for tracking
+  # Position trading controls
+  square_off_at_pre_close: false        # Do NOT square off at pre-close — allow overnight
+  reset_daily_state_on_new_day: false   # Carry capital/P&L across days
+  positional_entry_cutoff_hour: 14      # Stop entering new positions after 2 PM (give time to develop)
+
+# ============================================================
+# STRATEGIES — All strategies with max_hold_minutes=0
+# ============================================================
+strategies:
+  enabled:
+    - momentum_breakout                 # PRIMARY — can now hold multi-day
+    - vwap_reversion                    # SECONDARY — can hold multi-day
+    - opening_range_breakout            # MORNING ONLY — can hold multi-day
+    # - mean_reversion                  # Can re-enable for multi-day
+  positional_confidence_threshold: 0.6  # Lowered from 0.7 to allow more entries
+
+mean_reversion:
+  lookback_period: 20
+  entry_zscore: -2.5
+  exit_zscore: 0.5
+  stop_zscore: -3.5           # Widened from -2.5 for positional holds
+  min_exit_profit_pct: 2.0    # Widened from 1.0 for positional holds
+  max_hold_minutes: 0         # 0 = no limit, can hold indefinitely
+  require_trend_alignment: true
+  require_vwap: true
+  rsi_capitulation_floor: 20
+
+momentum_breakout:
+  volume_multiplier: 1.3
+  breakout_threshold_pct: 0.8
+  atr_multiplier_stop: 6.0        # Widened from 2.5 for positional holds
+  atr_multiplier_target: 10.0     # Widened from 6.0 for positional holds
+  trailing_stop_atr: 3.0
+  max_hold_minutes: 0             # 0 = no limit, can hold indefinitely
+  require_vwap: false
+  volume_decay_exit_ratio: 0.7
+
+opening_range_breakout:
+  opening_range_minutes: 15
+  breakout_buffer_pct: 0.15
+  atr_multiplier_stop: 5.0        # Widened from 1.5 for positional holds
+  atr_multiplier_target: 8.0      # Widened from 4.5 for positional holds
+  max_window_minutes: 45
+  volume_confirm: true
+  trailing_stop_atr: 2.0
+  max_hold_minutes: 0               # 0 = no limit, can hold indefinitely
+  min_range_atr_ratio: 0.5
+
+vwap_reversion:
+  deviation_pct_buy: 2.5           # Widened from 2.0 for positional holds
+  deviation_pct_sell: 2.5          # Widened from 2.0 for positional holds
+  exit_at_vwap: true
+  require_trend_alignment: true
+  volume_multiplier: 1.2
+  min_target_pct: 1.5              # Widened from 1.0 for positional holds
+  trail_activate_pct: 1.2          # Widened from 1.0 for positional holds
+  trailing_stop_pct: 1.2           # Widened from 0.8 for positional holds
+  atr_multiplier_stop: 6.0         # Widened from 2.5 for positional holds
+  max_hold_minutes: 0               # 0 = no limit, can hold indefinitely
+  rsi_capitulation_floor: 15
+  rsi_overbought_ceiling: 85
+
+# ============================================================
+# RISK MANAGEMENT
+# ============================================================
+risk:
+  max_risk_per_trade_pct: 0.75
+  max_open_positions: 3
+  max_daily_loss_pct: 2.0
+  max_total_exposure_pct: 70.0
+  min_risk_reward_ratio: 2.0
+
+position_sizing:
+  method: volatility_adjusted
+  fixed_quantity: 10
+  volatility_lookback: 14
+  max_position_pct: 35.0
+  min_position_value_inr: 25000
+  target_commission_drag_pct: 0.15
+
+# ============================================================
+# REPORTING
+# ============================================================
+reporting:
+  daily_report: true
+  report_dir: ./reports
+  format: json
+
+alerts:
+  enabled: true
+  channels:
+    - console
+  alert_on_trade: true
+  alert_on_risk_breach: true
+  alert_on_error: true

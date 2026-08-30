@@ -42,6 +42,9 @@ class PortfolioManager:
         self._trades: list[Trade] = []
         self._daily_pnl = 0.0
 
+        # Position trading: control daily state reset
+        self._reset_daily_state_on_new_day = config.get("scheduler", {}).get("reset_daily_state_on_new_day", True)
+
         # Attempt to restore from saved state (mid-day restart)
         restored = self._restore_from_disk(initial_capital)
         if not restored:
@@ -80,7 +83,10 @@ class PortfolioManager:
         )
         return True
 
-    def open_position(self, order: Order, entry_commission: float = 0.0) -> Position:
+    def open_position(
+        self, order: Order, entry_commission: float = 0.0,
+        target_price: float = 0.0, max_hold_minutes: int = 0,
+    ) -> Position:
         """Create a new position from a filled order."""
         position = Position(
             symbol=order.symbol,
@@ -92,7 +98,14 @@ class PortfolioManager:
             strategy_id=order.strategy_id,
             entry_order_id=order.id,
             entry_commission=entry_commission,
+            service_origin=order.service_origin,  # Track which service opened this
         )
+        # Persist the strategy target / max-hold so reporting and risk logic can
+        # rely on it (previously set AFTER save, so it never reached state.json).
+        if target_price > 0:
+            position.target_price = target_price
+        if max_hold_minutes > 0:
+            position.max_hold_minutes = max_hold_minutes
 
         notional = order.filled_price * order.filled_quantity
         self._available_capital -= notional + entry_commission
@@ -240,6 +253,19 @@ class PortfolioManager:
         """Return symbols with open positions."""
         return {s for s, p in self._positions.items() if p.status == PositionStatus.OPEN}
 
+    def get_open_position_symbols_by_service(self, service_origin: str) -> set[str]:
+        """Return symbols with open positions from a specific service.
+        
+        If service_origin is empty string, returns ALL open positions
+        regardless of service_origin.
+        """
+        if not service_origin:
+            return {s for s, p in self._positions.items() if p.status == PositionStatus.OPEN}
+        return {
+            s for s, p in self._positions.items()
+            if p.status == PositionStatus.OPEN and p.service_origin == service_origin
+        }
+
     @property
     def trades(self) -> list[Trade]:
         return list(self._trades)
@@ -251,8 +277,22 @@ class PortfolioManager:
 
     def reset_daily_state(self) -> None:
         """Reset daily P&L counters (called at start of each day)."""
+        # daily_pnl is always a per-day metric — reset it regardless of config.
+        # Only carry capital/positions/peak across days when configured.
+        old_daily = self._daily_pnl
         self._daily_pnl = 0.0
-        logger.info("Daily portfolio state reset")
+        if not self._reset_daily_state_on_new_day:
+            logger.info(
+                "Daily P&L reset (%.2f -> 0.0); peak/capital carried across days",
+                old_daily,
+            )
+            return
+        # Reset peak to current capital so drawdown is measured per-day (this is
+        # an intraday strategy that resets each session). Without this a single
+        # bad day could latch the drawdown pause indefinitely (until a new
+        # all-time high), permanently halting trading.
+        self._peak_capital = self._total_capital
+        logger.info("Daily portfolio state reset (peak reset to %.2f)", self._peak_capital)
 
     def close_all_positions(self, get_price_fn: Callable[[str], float], exit_commission_fn: Callable[[str, float], float] | None = None) -> int:
         """Close all open positions (used at end of day)."""

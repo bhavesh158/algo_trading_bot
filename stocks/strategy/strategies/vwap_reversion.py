@@ -42,7 +42,7 @@ class VWAPReversionStrategy(BaseStrategy):
         self._require_trend = strat_config.get("require_trend_alignment", True)
         self._volume_multiplier = strat_config.get("volume_multiplier", 1.2)  # Restored from 1.0
         self._min_target_pct = strat_config.get("min_target_pct", 0.5)  # Restored from 0.4%
-        self.primary_timeframe = Timeframe.M5
+        self.primary_timeframe = Timeframe.M15  # CHANGED: Use 15-min for ATR (5-min gives too-tight stops)
 
         # RSI thresholds
         self._rsi_capitulation_floor = strat_config.get("rsi_capitulation_floor", 15)  # BUY floor
@@ -51,6 +51,9 @@ class VWAPReversionStrategy(BaseStrategy):
         # Trailing stop with activation threshold (restored after tight stops caused losses)
         self._trail_activate_pct: float = strat_config.get("trail_activate_pct", 0.6)  # Restored from 0.4%
         self._trailing_stop_pct: float = strat_config.get("trailing_stop_pct", 0.8)  # CRITICAL FIX: was 0.3%
+
+        # ATR multiplier for stop-loss (wider = more room for trade to develop)
+        self._atr_stop_multiplier = strat_config.get("atr_multiplier_stop", 5.0)  # CHANGED: 1.5→5.0
 
         # Time exit: safety net
         self._max_hold_minutes = strat_config.get("max_hold_minutes", 240)  # Restored from 180
@@ -161,7 +164,7 @@ class VWAPReversionStrategy(BaseStrategy):
                 )
                 return None
 
-            stop_loss = current_price - 1.5 * atr_value
+            stop_loss = current_price - self._atr_stop_multiplier * atr_value
             confidence = min(abs(deviation_pct) / 3.0, 1.0)
 
             # RSI confirmation boost (oversold = higher confidence)
@@ -219,7 +222,7 @@ class VWAPReversionStrategy(BaseStrategy):
                 )
                 return None
 
-            stop_loss = current_price + 1.5 * atr_value
+            stop_loss = current_price + self._atr_stop_multiplier * atr_value
             confidence = min(abs(deviation_pct) / 3.0, 1.0)
 
             # RSI confirmation boost (overbought = higher confidence)

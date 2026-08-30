@@ -57,9 +57,21 @@ class StrategyEngine:
         self.multi_tf = multi_tf
 
         self._strategies: list[BaseStrategy] = []
-        self._confidence_threshold = config.get("strategies", {}).get(
-            "default_confidence_threshold", 0.6
-        )
+        
+        # Confidence threshold - use higher threshold for positional service
+        strategies_config = config.get("strategies", {})
+        service_origin = config.get("scheduler", {}).get("service_origin", "")
+        
+        if service_origin == "position_trader":
+            # Positional service requires higher confidence for entry
+            self._confidence_threshold = strategies_config.get(
+                "positional_confidence_threshold", 0.7
+            )
+            logger.info("Positional service: confidence threshold = %.2f", self._confidence_threshold)
+        else:
+            self._confidence_threshold = strategies_config.get(
+                "default_confidence_threshold", 0.6
+            )
 
         # Macro context gating
         self._macro_analyst: Any = None
@@ -75,7 +87,15 @@ class StrategyEngine:
         self._macro_analyst = macro_analyst
 
     def load_strategies(self, market_data: MarketDataEngine) -> None:
-        """Instantiate all enabled strategies from stocks.config."""
+        """Instantiate all enabled strategies from stocks.config.
+
+        Note: `self._strategies` is reset to [] first. The scheduler calls this
+        once per pre-market session, and the service process may stay alive
+        across multiple days — without a reset, duplicate strategy instances
+        accumulate (3 -> 6 -> 9) causing `check_exits` to emit multiple
+        identical exit signals and place duplicate broker orders.
+        """
+        self._strategies: list[BaseStrategy] = []
         enabled = self.config.get("strategies", {}).get("enabled", [])
         for name in enabled:
             strategy = self._create_strategy(name, market_data)
@@ -85,9 +105,12 @@ class StrategyEngine:
 
         logger.info("Total strategies loaded: %d", len(self._strategies))
 
-    @staticmethod
-    def _create_strategy(name: str, market_data: MarketDataEngine) -> Optional[BaseStrategy]:
-        """Dynamically import and instantiate a strategy by name."""
+    def _create_strategy(self, name: str, market_data: MarketDataEngine) -> Optional[BaseStrategy]:
+        """Dynamically import and instantiate a strategy by name.
+
+        Uses the service's merged config (not hardcoded default_config.yaml)
+        so that intraday and positional services get their own strategy params.
+        """
         if name not in _STRATEGY_REGISTRY:
             logger.warning("Unknown strategy: %s", name)
             return None
@@ -97,10 +120,8 @@ class StrategyEngine:
             import importlib
             module = importlib.import_module(module_path)
             cls = getattr(module, class_name)
-            # Each strategy receives global config + market data
-            from stocks.config.settings import load_config
-            config = load_config()
-            return cls(config, market_data)
+            # Each strategy receives the service's merged config + market data
+            return cls(self.config, market_data)
         except Exception:
             logger.exception("Failed to load strategy: %s", name)
             return None
@@ -307,10 +328,16 @@ class StrategyEngine:
         and time-based exit checks.
         """
         exit_signals: list[Signal] = []
+        seen_symbols: set[str] = set()
 
         for symbol, pos in positions.items():
             for strategy in self._strategies:
                 if strategy.strategy_id != pos.get("strategy_id"):
+                    continue
+                # Dedup: emit at most one exit signal per symbol per call so a
+                # single position can never generate multiple identical broker
+                # exit orders (e.g. from duplicated strategy instances).
+                if symbol in seen_symbols:
                     continue
                 current_price = pos.get("current_price", 0)
                 entry_price = pos.get("entry_price", 0)
@@ -320,6 +347,7 @@ class StrategyEngine:
                 )
                 if exit_signal:
                     exit_signals.append(exit_signal)
+                    seen_symbols.add(symbol)
 
         return exit_signals
 

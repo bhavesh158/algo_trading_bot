@@ -15,7 +15,7 @@ import time as _time
 from datetime import datetime, time, timedelta
 from typing import Any
 
-from stocks.core.enums import OrderSide, OrderType, TradingPhase
+from stocks.core.enums import OrderSide, OrderStatus, OrderType, TradingMode, TradingPhase
 from stocks.core.event_bus import EventBus
 from stocks.core.events import ScheduleEvent
 from stocks.core.models import Order
@@ -51,9 +51,38 @@ class TradingScheduler:
         self._min_expected_profit_pct = sched_config.get("min_expected_profit_pct", 0.5)
         self._max_open_positions = config.get("risk", {}).get("max_open_positions", 3)
 
+        # Position trading controls
+        self._square_off_at_pre_close = sched_config.get("square_off_at_pre_close", True)
+        self._reset_daily_state_on_new_day = sched_config.get("reset_daily_state_on_new_day", True)
+        self._service_origin = sched_config.get("service_origin", "")  # Track which service this scheduler belongs to
+
         # Post-close cooldown: prevent re-entering a symbol for N minutes after close
         self._cooldown_minutes = sched_config.get("trade_cooldown_minutes", 15)
         self._symbol_cooldown: dict[str, datetime] = {}  # symbol -> cooldown_end
+
+        # Exit guard: prevent duplicate exit orders for the same symbol
+        # within a single scheduler cycle (tracks symbols being exited NOW)
+        self._pending_exits: set[str] = set()
+
+        # Time-based cooldown: prevent re-exiting same symbol within N seconds
+        self._last_exit_time: dict[str, datetime] = {}
+        self._exit_cooldown_seconds = sched_config.get("exit_cooldown_seconds", 60)
+
+        # Startup hold: block entry signals for N minutes after scheduler start
+        # so that the other trading service can open positions first,
+        # preventing duplicate symbol trading at market open.
+        self._startup_hold_minutes = sched_config.get("startup_hold_minutes", 10)
+        self._startup_hold_until: Optional[datetime] = (
+            datetime.now() + timedelta(minutes=self._startup_hold_minutes)
+            if self._startup_hold_minutes > 0
+            else None
+        )
+
+        logger.info(
+            "Startup hold active: block entries for %d minutes (until %s)",
+            self._startup_hold_minutes,
+            self._startup_hold_until.strftime("%H:%M:%S") if self._startup_hold_until else "disabled",
+        )
         
         # Cross-session cooldown: track last exit time per symbol ACROSS days
         # DISABLED: This was forcing the strategy to take inferior signals from less
@@ -69,15 +98,39 @@ class TradingScheduler:
         """Parse HH:MM string into a time object."""
         return datetime.strptime(time_str, "%H:%M").time()
 
+    def _is_trading_day(self, today: datetime) -> bool:
+        """Return True if NSE is open on `today` (weekday, not an exchange holiday).
+
+        NSE is closed on Saturdays, Sundays, and public holidays. The clock-based
+        phase logic alone would otherwise treat weekends as a normal trading day
+        and run pre-market/reconciliation (which can falsely remove overnight
+        delivery holdings when the broker's daily position book is empty before
+        the next session).
+        """
+        if today.weekday() >= 5:  # Saturday=5, Sunday=6
+            return False
+        holidays = self.config.get("schedule", {}).get("nse_holidays", [])
+        if today.date().isoformat() in holidays:
+            return False
+        return True
+
     def _get_current_phase(self) -> TradingPhase:
         """Determine the current trading phase based on clock time."""
         now = datetime.now()
         today = now.date()
 
+        # NSE does not trade on weekends/holidays — stay closed regardless of clock.
+        if not self._is_trading_day(now):
+            self._last_trading_date = today
+            return TradingPhase.MARKET_CLOSED
+
         # Reset daily flags when the date rolls over
         if self._last_trading_date != today:
-            if self._last_trading_date is not None:
+            if self._last_trading_date is not None and self._reset_daily_state_on_new_day:
                 logger.info("New trading day detected (%s -> %s), resetting daily state",
+                            self._last_trading_date, today)
+            elif self._last_trading_date is not None and not self._reset_daily_state_on_new_day:
+                logger.info("New trading day detected (%s -> %s), carrying state across days",
                             self._last_trading_date, today)
             self._last_trading_date = today
             self._pre_market_done = False
@@ -142,6 +195,67 @@ class TradingScheduler:
         logger.info("Phase transition: %s -> %s", old_phase.name, new_phase.name)
         self.event_bus.publish(ScheduleEvent(phase=new_phase))
 
+    def _reconcile_positions(self, system: Any) -> None:
+        """Compare internal positions with broker and remove ghosts.
+
+        Detects when the user (or another system) manually closes a position
+        that the bot still thinks is open. Without this, the bot would try to
+        exit a non-existent position and then re-enter it.
+        """
+        # Only trust broker ghost-detection during an active market session.
+        # Outside market hours (and especially on weekends) the broker's daily
+        # position book can briefly report empty even though delivery holdings
+        # are still validly held — treating that as a 'ghost' removes real
+        # overnight positions and books a false P&L. We must not reconcile then.
+        if self._current_phase not in (TradingPhase.MARKET_OPEN, TradingPhase.MARKET_HOURS, TradingPhase.PRE_CLOSE):
+            logger.info(
+                "Reconciliation skipped outside active market session (phase=%s) — "
+                "keeping internal positions to avoid false ghost removal",
+                self._current_phase.name,
+            )
+            return
+
+        broker_positions = system.order_executor.get_broker_positions()
+        internal_positions = system.portfolio_manager.get_open_positions()
+
+        if broker_positions is None:
+            logger.warning(
+                "Reconciliation skipped: broker positions query failed — keeping "
+                "internal positions (avoiding false ghost removal / duplicate re-entry)"
+            )
+            return
+
+        ghost_count = 0
+        for symbol, pos in list(internal_positions.items()):
+            broker_qty = broker_positions.get(symbol, 0)
+            
+            if broker_qty == 0:
+                # Broker has no position — user (or someone) closed it
+                logger.warning(
+                    "RECONCILIATION: Ghost position detected: %s %d shares "
+                    "(broker shows 0) — removing from state",
+                    symbol, pos.quantity,
+                )
+                # Record as a zero-P&L close (we don't know the actual exit price)
+                system.portfolio_manager.close_position(symbol, pos.current_price, 0.0)
+                system.order_executor.release_symbol(symbol)
+                ghost_count += 1
+            elif abs(broker_qty) != abs(pos.quantity):
+                # Quantity mismatch — user partially closed or added
+                logger.warning(
+                    "RECONCILIATION: Quantity mismatch for %s: internal=%d broker=%d",
+                    symbol, pos.quantity, broker_qty,
+                )
+                # Update internal quantity to match broker
+                pos.quantity = abs(broker_qty)
+        
+        if ghost_count > 0:
+            logger.warning(
+                "Reconciliation complete: removed %d ghost positions", ghost_count
+            )
+        else:
+            logger.debug("Reconciliation complete: all positions match broker")
+
     def _execute_phase(self) -> None:
         """Delegate to the TradingSystem based on the current phase."""
         if not hasattr(self, '_system') or self._system is None:
@@ -172,18 +286,40 @@ class TradingScheduler:
         """Pre-market phase: load data, build watchlist, prepare strategies."""
         logger.info("--- PRE-MARKET PHASE ---")
 
-        # Reset daily state
+        # Reset daily state.
+        # daily_pnl and risk flags are ALWAYS daily metrics — reset them every day.
+        # Peak capital and drawdown monitor only reset for intraday mode
+        # (reset_daily_state_on_new_day=true). For positional mode, drawdown is
+        # measured across the full multi-day hold.
         system.portfolio_manager.reset_daily_state()
         system.risk_manager.reset_daily_state()
+        if self._reset_daily_state_on_new_day:
+            system.drawdown_monitor.reset_daily_state()
+        else:
+            logger.info(
+                "Drawdown monitor carry-over (reset_daily_state_on_new_day=false) — "
+                "peak/drawdown persist across session boundary"
+            )
 
-        # Load daily data for stock selection scoring
-        from stocks.selection.stock_selector import NIFTY50_SYMBOLS
-        logger.info("Loading daily data for %d candidates...", len(NIFTY50_SYMBOLS))
-        system.market_data_engine.load_daily_data(NIFTY50_SYMBOLS)
+        # Check if positional service has its own symbol list
+        selection_config = self.config.get("selection", {})
+        positional_symbols = selection_config.get("positional_symbols", [])
+        
+        if self._service_origin == "position_trader" and positional_symbols:
+            # Positional service uses its own symbol list
+            watchlist = positional_symbols
+            logger.info("Positional service using custom watchlist: %d symbols", len(watchlist))
+            # Store watchlist for use in market hours
+            system.stock_selector._watchlist = watchlist
+        else:
+            # Load daily data for stock selection scoring
+            from stocks.selection.stock_selector import NIFTY50_SYMBOLS
+            logger.info("Loading daily data for %d candidates...", len(NIFTY50_SYMBOLS))
+            system.market_data_engine.load_daily_data(NIFTY50_SYMBOLS)
 
-        # Build watchlist
-        system.stock_selector.build_watchlist()
-        watchlist = system.stock_selector.watchlist
+            # Build watchlist
+            system.stock_selector.build_watchlist()
+            watchlist = system.stock_selector.watchlist
 
         # Load intraday data for watchlist + index symbols for regime detection
         index_symbols = self.config.get("selection", {}).get("index_symbols", ["^NSEI"])
@@ -206,6 +342,11 @@ class TradingScheduler:
             system.portfolio_manager, system.performance_monitor
         )
 
+        # --- POSITION RECONCILIATION ---
+        # Compare internal state with broker positions to detect manual closes
+        # or other bots trading the same account.
+        self._reconcile_positions(system)
+
         # Initial macro refresh at pre-market (non-blocking)
         if hasattr(system, "macro_analyst") and system.macro_analyst is not None:
             try:
@@ -227,7 +368,15 @@ class TradingScheduler:
         if system.risk_manager.is_daily_loss_breached:
             return
 
-        watchlist = system.stock_selector.watchlist
+        # Get watchlist - use positional symbols if available for positional service
+        selection_config = self.config.get("selection", {})
+        positional_symbols = selection_config.get("positional_symbols", [])
+        
+        if self._service_origin == "position_trader" and positional_symbols:
+            watchlist = positional_symbols
+        else:
+            watchlist = system.stock_selector.watchlist
+            
         if not watchlist:
             return
 
@@ -245,6 +394,11 @@ class TradingScheduler:
                 self._cycle_count, regime.name, state.open_position_count,
                 state.total_capital, state.daily_pnl, len(watchlist),
             )
+
+        # Periodic reconciliation with broker (every 50 cycles ≈ 4 min)
+        # Catches manual closes and prevents ghost position re-entries
+        if self._cycle_count % 50 == 0 and self._cycle_count > 0:
+            self._reconcile_positions(system)
 
         # Update position prices
         for symbol, pos in system.portfolio_manager.get_open_positions().items():
@@ -274,8 +428,16 @@ class TradingScheduler:
         signals = system.strategy_engine.run_strategies(watchlist)
 
         # Execute signals (with per-entry position limit + throttle)
+        # Track entries within this cycle to prevent duplicate signals for same symbol
         entries_this_cycle = 0
+        cycle_entry_symbols: set[str] = set()
         commission_per_trade = system.order_executor.commission
+        
+        # Pre-open block: prevent orders before market open
+        now = datetime.now()
+        if now.time() < self._market_open:
+            logger.debug("Pre-open: skipping signal processing (market opens at %s)", self._market_open)
+            return
 
         for signal in signals:
             # Hard limit: re-check position count before EACH entry
@@ -286,6 +448,23 @@ class TradingScheduler:
             # Throttle: max entries per cycle
             if entries_this_cycle >= self._max_entries_per_cycle:
                 break
+
+            # Skip duplicate signals for same symbol within this cycle
+            if signal.symbol in cycle_entry_symbols:
+                continue
+
+            # Positional service: prevent new entries after cutoff hour to give time for positions to develop
+            if self._service_origin == "position_trader":
+                sched_config = self.config.get("scheduler", {})
+                cutoff_hour = sched_config.get("positional_entry_cutoff_hour", 14)
+                now = datetime.now()
+                cutoff_time = now.replace(hour=cutoff_hour, minute=0, second=0, microsecond=0)
+                if now > cutoff_time:
+                    logger.debug(
+                        "Signal blocked (positional late entry): %s — after %d:00 cutoff",
+                        signal.symbol, cutoff_hour,
+                    )
+                    continue
 
             # Profitability filter: reject signals where target doesn't cover fees
             if signal.target_price and signal.entry_price > 0:
@@ -328,8 +507,36 @@ class TradingScheduler:
                 else:
                     del self._symbol_cooldown[signal.symbol]
 
-            # Skip if already have a position in this symbol
-            if signal.symbol in system.portfolio_manager.get_open_position_symbols():
+            # STARTUP HOLD: block entry signals for first N minutes after scheduler
+            # start so the other trading service can open positions first, preventing
+            # duplicate symbol trading at market open.
+            if self._startup_hold_until is not None and datetime.now() < self._startup_hold_until:
+                remaining = (self._startup_hold_until - datetime.now()).seconds / 60
+                logger.debug(
+                    "Signal blocked (startup hold): %s — %.1f min remaining",
+                    signal.symbol, remaining,
+                )
+                continue
+
+            # Skip if already have a position in this symbol (from the same service)
+            same_service_symbols = system.portfolio_manager.get_open_position_symbols_by_service(
+                self._service_origin
+            )
+            if signal.symbol in same_service_symbols:
+                continue
+
+            # Skip if the OTHER service already has a position in this symbol
+            # so both services don't trade the same symbol simultaneously
+            all_services = system.portfolio_manager.get_open_position_symbols_by_service("")
+            my_service_symbols = system.portfolio_manager.get_open_position_symbols_by_service(
+                self._service_origin
+            )
+            other_service_symbols = all_services - my_service_symbols
+            if signal.symbol in other_service_symbols:
+                logger.debug(
+                    "Skipping %s — other service (%s) already has position in this symbol",
+                    signal.symbol, self._service_origin,
+                )
                 continue
 
             quantity = system.position_sizer.calculate_quantity(signal)
@@ -345,26 +552,63 @@ class TradingScheduler:
                 stop_price=signal.stop_loss,
                 strategy_id=signal.strategy_id,
                 signal_id=signal.id,
+                service_origin=self._service_origin,
             )
 
             current_price = system.market_data_engine.get_current_price(signal.symbol)
             filled_order = system.order_executor.execute_order(order, current_price)
 
-            if filled_order.status.name == "FILLED":
+            filled = filled_order.status.name == "FILLED"
+            if not filled and system.order_executor.position_still_open(signal.symbol):
+                logger.warning(
+                    "Entry for %s not confirmed by poll but broker shows position — "
+                    "treating as filled", signal.symbol,
+                )
+                filled = True
+                if filled_order.filled_price <= 0:
+                    filled_order.filled_price = current_price
+                if filled_order.filled_quantity <= 0:
+                    filled_order.filled_quantity = quantity
+
+            if filled:
                 entry_comm = system.order_executor.commission
-                pos = system.portfolio_manager.open_position(filled_order, entry_commission=entry_comm)
-                # Propagate target_price and max hold from signal to position
-                if signal.target_price > 0:
-                    pos.target_price = signal.target_price
                 max_hold = signal.metadata.get("max_hold_minutes", 0)
-                if max_hold > 0:
-                    pos.max_hold_minutes = max_hold
+                pos = system.portfolio_manager.open_position(
+                    filled_order, entry_commission=entry_comm,
+                    target_price=signal.target_price, max_hold_minutes=max_hold,
+                )
                 system.trade_journal.log_open(filled_order, pos)
                 entries_this_cycle += 1
+                cycle_entry_symbols.add(signal.symbol)
 
         # Check exit conditions for open positions
-        open_positions = system.portfolio_manager.get_open_positions()
+        # Only consider positions from this service
+        if self._service_origin:
+            open_positions = {
+                s: p for s, p in system.portfolio_manager.get_open_positions().items()
+                if p.service_origin == self._service_origin
+            }
+        else:
+            open_positions = system.portfolio_manager.get_open_positions()
         for symbol, pos in list(open_positions.items()):
+            # GUARD: Skip if this symbol is already being exited (prevents 3x duplicate orders)
+            if symbol in self._pending_exits:
+                continue
+            self._pending_exits.add(symbol)
+
+            # TIME-BASED COOLDOWN: prevent re-exiting same symbol within N seconds
+            # This catches duplicates across multiple check_exits() calls (the real
+            # root cause of the 3x duplicate order bug from Aug 24).
+            last_exit = self._last_exit_time.get(symbol)
+            if last_exit is not None:
+                elapsed = (datetime.now() - last_exit).total_seconds()
+                if elapsed < self._exit_cooldown_seconds:
+                    logger.debug(
+                        "Skipping exit for %s — cooldown %.0fs/%.0fs since last exit attempt",
+                        symbol, elapsed, self._exit_cooldown_seconds,
+                    )
+                    continue
+
             current_price = system.market_data_engine.get_current_price(symbol)
 
             # Update position price extremes for trailing stops
@@ -384,29 +628,44 @@ class TradingScheduler:
                 exit_comm = system.order_executor.commission
                 exit_reason = exit_sig.metadata.get("exit_reason", "strategy")
 
-                # Commission-aware holdback: if the strategy-target exit would net a
-                # loss after round-trip fees, hold a bit longer so price can run past
-                # the target. ALWAYS exit on:
-                # 1. Stop-loss hits
-                # 2. Time exit (near expiry)
-                # 3. Deep losses (loss exceeds threshold)
-                # 4. Trailing stop hits
+                # MINIMUM HOLD ENFORCEMENT:
+                # For positional service, block ALL exits (except stop-loss) until
+                # min_hold_minutes has elapsed. This prevents same-day exits.
+                # For intraday service, only block strategy exits (allow trailing/time).
+                min_hold_minutes = self.config.get("min_hold_minutes", 0)
+                is_positional = self._service_origin == "position_trader"
+                
+                if min_hold_minutes > 0 and pos.hold_duration_minutes < min_hold_minutes:
+                    # For positional: block ALL exits except stop-loss
+                    # For intraday: block only strategy exits
+                    if is_positional and exit_reason != "stop_loss":
+                        logger.debug(
+                            "Holding %s (positional) — minimum hold not yet elapsed: %.1f/%.1f min (reason=%s)",
+                            symbol, pos.hold_duration_minutes, min_hold_minutes, exit_reason,
+                        )
+                        continue
+                    elif not is_positional and exit_reason == "strategy":
+                        logger.debug(
+                            "Holding %s (intraday) — minimum hold not yet elapsed: %.1f/%.1f min",
+                            symbol, pos.hold_duration_minutes, min_hold_minutes,
+                        )
+                        continue
                 if exit_reason == "strategy" and exit_comm > 0:
                     round_trip_comm = exit_comm * 2
                     gross_pnl = pos.unrealized_pnl  # direction-aware
                     gross_pnl_pct = pos.unrealized_pnl_pct  # percentage
                     
-                    # Calculate loss threshold: exit if loss > 1.5× round-trip commission
-                    # This prevents holding positions that are bleeding beyond reasonable hope
-                    loss_threshold = -round_trip_comm * 1.5
+                    # Calculate loss threshold: exit if loss > 5× round-trip commission
+                    # This gives trades room to recover from temporary dips
+                    loss_threshold = -round_trip_comm * 5.0  # CHANGED: 1.5→5.0
                     
                     # Hard bail-out: position has gone significantly negative
                     deeply_negative = gross_pnl < loss_threshold
                     
-                    # Bail-out: nearly expired (>80% of max hold elapsed)
+                    # Bail-out: nearly expired (>90% of max hold elapsed)
                     near_expiry = (
                         pos.max_hold_minutes > 0
-                        and pos.hold_duration_minutes >= pos.max_hold_minutes * 0.80
+                        and pos.hold_duration_minutes >= pos.max_hold_minutes * 0.90
                     )
                     
                     # Force exit if deeply negative OR near expiry, regardless of commission
@@ -436,8 +695,46 @@ class TradingScheduler:
                         )
                         continue
 
+                exit_price = current_price
+                if system.order_executor.mode == TradingMode.LIVE:
+                    # Release symbol lock so the exit order is accepted, place a
+                    # real market exit order, then close with the actual fill.
+                    system.order_executor.release_symbol(symbol)
+                    exit_order = Order(
+                        symbol=symbol,
+                        side=OrderSide.SELL if pos.side == OrderSide.BUY else OrderSide.BUY,
+                        order_type=OrderType.MARKET,
+                        quantity=pos.quantity,
+                        price=current_price,
+                        strategy_id=pos.strategy_id,
+                        service_origin=pos.service_origin,
+                    )
+                    exit_order = system.order_executor.execute_order(exit_order, current_price)
+
+                    filled = exit_order.status == OrderStatus.FILLED
+                    if not filled and not system.order_executor.position_still_open(symbol):
+                        # Broker no longer holds the position, so the exit did
+                        # execute even though order-book confirmation was missed.
+                        logger.warning(
+                            "Exit for %s not confirmed by poll but broker shows no "
+                            "open position (reason=%s) — treating as filled",
+                            symbol, exit_reason,
+                        )
+                        filled = True
+
+                    if not filled:
+                        system.order_executor.register_active_symbol(symbol)
+                        logger.error(
+                            "EXIT ORDER FAILED for %s (reason=%s): status=%s — position kept open",
+                            symbol, exit_reason, exit_order.status.name,
+                        )
+                        continue
+
+                    if exit_order.filled_price > 0:
+                        exit_price = exit_order.filled_price
+
                 trade = system.portfolio_manager.close_position(
-                    symbol, current_price, exit_comm
+                    symbol, exit_price, exit_comm
                 )
                 if trade:
                     exit_reason = exit_sig.metadata.get("exit_reason", "strategy")
@@ -448,6 +745,9 @@ class TradingScheduler:
                     system.trade_journal.log_close(trade)
                     system.performance_monitor.record_trade(trade)
                     system.order_executor.release_symbol(symbol)
+
+                    # Record exit time for cooldown guard
+                    self._last_exit_time[symbol] = datetime.now()
                     
                     # Apply intra-day cooldown: prevent re-entering this symbol for N minutes
                     self._symbol_cooldown[symbol] = datetime.now() + timedelta(
@@ -456,6 +756,9 @@ class TradingScheduler:
                     logger.debug(
                         "Intra-day cooldown set for %s: %d min", symbol, self._cooldown_minutes
                     )
+
+        # Clear exit guard for next cycle
+        self._pending_exits.clear()
 
         # Evaluate strategy performance periodically
         underperforming = system.performance_monitor.evaluate_strategies()
@@ -466,14 +769,51 @@ class TradingScheduler:
         """Pre-close phase: close positions, cancel orders, generate report."""
         logger.info("--- PRE-CLOSE PHASE ---")
 
-        # Close all open positions (with commission)
-        def _get_exit_comm(sym: str, notional: float) -> float:
-            return system.order_executor.commission
+        # Close all open positions (with commission) — only if square-off is enabled
+        if self._square_off_at_pre_close:
+            def _get_exit_comm(sym: str, notional: float) -> float:
+                return system.order_executor.commission
 
-        system.portfolio_manager.close_all_positions(
-            lambda sym: system.market_data_engine.get_current_price(sym),
-            exit_commission_fn=_get_exit_comm,
-        )
+            if system.order_executor.mode == TradingMode.LIVE:
+                for symbol, pos in list(system.portfolio_manager.get_open_positions().items()):
+                    price = system.market_data_engine.get_current_price(symbol)
+                    if price <= 0:
+                        logger.error("Pre-close: cannot get price for %s", symbol)
+                        continue
+                    system.order_executor.release_symbol(symbol)
+                    exit_order = Order(
+                        symbol=symbol,
+                        side=OrderSide.SELL if pos.side == OrderSide.BUY else OrderSide.BUY,
+                        order_type=OrderType.MARKET,
+                        quantity=pos.quantity,
+                        price=price,
+                        strategy_id=pos.strategy_id,
+                        service_origin=pos.service_origin,
+                    )
+                    exit_order = system.order_executor.execute_order(exit_order, price)
+                    if exit_order.status != OrderStatus.FILLED:
+                        system.order_executor.register_active_symbol(symbol)
+                        logger.error(
+                            "Pre-close exit FAILED for %s: status=%s — left for broker auto-square-off",
+                            symbol, exit_order.status.name,
+                        )
+                        continue
+                    if exit_order.filled_price > 0:
+                        price = exit_order.filled_price
+                    trade = system.portfolio_manager.close_position(
+                        symbol, price, _get_exit_comm(symbol, price * pos.quantity)
+                    )
+                    if trade:
+                        system.trade_journal.log_close(trade)
+                        system.performance_monitor.record_trade(trade)
+                        system.order_executor.release_symbol(symbol)
+            else:
+                system.portfolio_manager.close_all_positions(
+                    lambda sym: system.market_data_engine.get_current_price(sym),
+                    exit_commission_fn=_get_exit_comm,
+                )
+        else:
+            logger.info("Pre-close square-off disabled — positions will remain open for overnight holds")
 
         # Cancel pending orders
         system.order_executor.cancel_all_pending()

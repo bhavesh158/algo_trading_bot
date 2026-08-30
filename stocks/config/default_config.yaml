@@ -24,7 +24,7 @@ system:
   market: NSE
 
 account:
-  initial_capital: 200000.0               # ₹2L capital (allows 3-4 positions of ₹50-70k each)
+  initial_capital: 100000.0               # ₹1L capital (allows 2-3 positions of ₹30-50k each)
   currency: INR
   profit_tax_pct: 15.0
 
@@ -32,8 +32,11 @@ schedule:
   pre_market_start: "08:45"
   market_open: "09:15"
   market_close: "15:30"
-  pre_close_start: "15:15"
+  pre_close_start: "15:07"  # square off before Angel One blocks intraday orders near close (~15:15)
   post_market_end: "16:00"
+  # NSE public holidays (ISO dates) when the market is closed. Weekends are
+  # handled automatically. Update as needed for the current year.
+  nse_holidays: []
 
 market_data:
   provider: yahoo
@@ -69,12 +72,19 @@ selection:
 # SCHEDULER — Trade Frequency Control
 # ============================================================
 scheduler:
-  max_entries_per_cycle: 1              # CHANGED: 2→1 (one quality entry at a time)
-  min_expected_profit_pct: 1.0          # CHANGED: 0.5→1.0 (must cover commission + profit)
-  min_hold_minutes: 15                  # CHANGED: 10→15 (avoid noise exits)
-  signal_cooldown_seconds: 600          # CHANGED: 300→600 (10 min cooldown)
+  max_entries_per_cycle: 1              # One quality entry at a time
+  min_expected_profit_pct: 1.0          # Must cover commission + profit
+  min_hold_minutes: 15                  # Avoid noise exits
+  signal_cooldown_seconds: 600          # 10 min cooldown
   trade_cooldown_minutes: 15
+  exit_cooldown_seconds: 60               # Prevent duplicate exit orders within 60s
+  service_origin: intra_day             # Service identifier for tracking
+  # Position trading controls
+  square_off_at_pre_close: true         # Set false to allow overnight holds
+  reset_daily_state_on_new_day: true    # Set false to carry capital across days
 
+# ============================================================
+# STRATEGIES — Priority & Confidence
 # ============================================================
 # STRATEGIES — Priority & Confidence
 # ============================================================
@@ -97,7 +107,7 @@ mean_reversion:
   exit_zscore: 0.5                      # Let winners run
   stop_zscore: -2.5                     # Tighter stop
   min_exit_profit_pct: 1.0
-  max_hold_minutes: 90
+  max_hold_minutes: 90                  # 1.5 hours max hold (intraday)
   require_trend_alignment: true
   require_vwap: true
   rsi_capitulation_floor: 20
@@ -108,10 +118,10 @@ mean_reversion:
 momentum_breakout:
   volume_multiplier: 1.3                # CHANGED: 1.5→1.3 (more signals)
   breakout_threshold_pct: 0.8           # CHANGED: 1.0→0.8 (earlier entries)
-  atr_multiplier_stop: 1.8              # CHANGED: 2.0→1.8 (tighter risk)
-  atr_multiplier_target: 5.0            # CHANGED: 4.0→5.0 (let winners run)
+  atr_multiplier_stop: 5.0              # CHANGED: 1.8→5.0 (wider stops for meaningful time)
+  atr_multiplier_target: 8.0            # CHANGED: 5.0→8.0 (wider targets)
   trailing_stop_atr: 2.0                # CHANGED: 1.5→2.0
-  max_hold_minutes: 180
+  max_hold_minutes: 180                 # 3 hours max hold (intraday)
   require_vwap: false                   # CHANGED: true→false (was blocking valid breakouts)
   volume_decay_exit_ratio: 0.7
 
@@ -121,12 +131,12 @@ momentum_breakout:
 opening_range_breakout:
   opening_range_minutes: 15
   breakout_buffer_pct: 0.15
-  atr_multiplier_stop: 1.2              # CHANGED: 1.5→1.2 (tighter)
-  atr_multiplier_target: 3.5            # CHANGED: 3.0→3.5 (better R:R)
+  atr_multiplier_stop: 4.0              # CHANGED: 1.2→4.0 (wider stops)
+  atr_multiplier_target: 6.0            # CHANGED: 3.5→6.0 (wider targets)
   max_window_minutes: 45                # CHANGED: 90→45 (morning only)
   volume_confirm: true                  # CHANGED: false→true (filter false breakouts)
   trailing_stop_atr: 1.2
-  max_hold_minutes: 150
+  max_hold_minutes: 150                 # 2.5 hours max hold (intraday)
   min_range_atr_ratio: 0.5              # CHANGED: 0.3→0.5 (meaningful range)
 
 # ============================================================
@@ -139,9 +149,10 @@ vwap_reversion:
   require_trend_alignment: true
   volume_multiplier: 1.2
   min_target_pct: 1.0                   # CHANGED: 0.5→1.0
-  trail_activate_pct: 0.5               # CHANGED: 0.6→0.5 (earlier trailing)
-  trailing_stop_pct: 0.4                # CHANGED: 0.8→0.4 (tighter trailing)
-  max_hold_minutes: 240
+  trail_activate_pct: 0.8               # CHANGED: 0.5→0.8 (activate trailing at 0.8% profit)
+  trailing_stop_pct: 0.8                # CHANGED: 0.4→0.8 (wider trailing to avoid noise exits)
+  atr_multiplier_stop: 5.0              # CHANGED: 1.5→5.0 (wider stops for meaningful time)
+  max_hold_minutes: 300                 # 5 hours max hold (intraday) — was 240/4h
   rsi_capitulation_floor: 15
   rsi_overbought_ceiling: 85
 
@@ -197,7 +208,7 @@ position_sizing:
   fixed_quantity: 10
   volatility_lookback: 14
   max_position_pct: 35.0                # CHANGED: 20.0→35.0 (larger positions allowed)
-  min_position_value_inr: 50000         # NEW: Minimum ₹50k positions (was ₹10k)
+  min_position_value_inr: 25000         # Min position size; must be < max_position_pct cap (~₹35k at ₹1L)
   target_commission_drag_pct: 0.15      # NEW: Max 0.15% commission drag
 
 # ============================================================
@@ -222,6 +233,19 @@ volatility_safeguards:
 
 broker:
   adapter: angelone
+  order_fill_timeout_seconds: 20   # max time to poll for a live order fill
+  order_poll_interval_seconds: 3   # interval between fill status polls
+  # Flat per-leg broker charge applied in live mode so the bot's P&L tracks the
+  # broker statement. Derived from 2026-08-13: ₹240.64 total / 10 legs
+  # (5 opens + 5 closes) ≈ ₹24.06. Tune as turnover/charges change.
+  live_commission_per_trade: 24.06
+
+execution:
+  # Blacklist: symbols blocked by exchange (cautionary listings)
+  blacklisted_symbols:
+    - "VEDL.NS"
+    - "ETERNAL.NS"
+    - "JIOFIN.NS"
 
 paper_trading:
   slippage_pct: 0.05

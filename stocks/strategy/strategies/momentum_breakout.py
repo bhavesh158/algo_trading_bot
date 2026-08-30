@@ -41,11 +41,11 @@ class MomentumBreakoutStrategy(BaseStrategy):
         self._lookback = strat_config.get("lookback_period", 20)
         self._volume_multiplier = strat_config.get("volume_multiplier", 1.5)
         self._breakout_threshold_pct = strat_config.get("breakout_threshold_pct", 1.0)
-        self._atr_stop = strat_config.get("atr_multiplier_stop", 2.0)
-        self._atr_target = strat_config.get("atr_multiplier_target", 4.0)
+        self._atr_stop = strat_config.get("atr_multiplier_stop", 5.0)  # CHANGED: 2.0→5.0 for wider stops
+        self._atr_target = strat_config.get("atr_multiplier_target", 8.0)  # CHANGED: 4.0→8.0 for wider targets
         self._require_vwap = strat_config.get("require_vwap", True)  # Renamed for clarity
         self._volume_decay_ratio = strat_config.get("volume_decay_exit_ratio", 0.7)
-        self.primary_timeframe = Timeframe.M5
+        self.primary_timeframe = Timeframe.M15  # CHANGED: Use 15-min for ATR (5-min gives too-tight stops)
 
         # Enable trailing stop and time exit from base class
         self._trailing_stop_atr = strat_config.get("trailing_stop_atr", 1.5)

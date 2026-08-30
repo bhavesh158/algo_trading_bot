@@ -12,6 +12,7 @@ import argparse
 import logging
 import signal
 import sys
+import os
 from typing import Any
 
 from stocks.config.settings import load_config, get_nested
@@ -142,6 +143,7 @@ class TradingSystem:
                 client_id=os.environ.get("BROKER_CLIENT_ID", ""),
                 password=os.environ.get("BROKER_PASSWORD", ""),
                 totp_secret=os.environ.get("BROKER_TOTP_SECRET", ""),
+                data_dir=get_nested(self.config, "system", "data_dir") or "data_store",
             )
         else:
             from stocks.execution.broker_adapters.zerodha_adapter import ZerodhaAdapter
@@ -154,8 +156,62 @@ class TradingSystem:
         if adapter.connect():
             self.order_executor.set_broker_adapter(adapter)
             logger.info("Broker adapter connected: %s", broker_name)
+            self._reconcile_positions_with_broker(adapter)
         else:
             raise RuntimeError(f"Failed to connect broker adapter: {broker_name}")
+
+    def _reconcile_positions_with_broker(self, adapter: Any) -> None:
+        """Reconcile in-memory positions with the broker's open positions.
+
+        Catches state/broker desync that occurs when an order fills at the
+        broker but its confirmation is missed (e.g., Angel One moves a filled
+        order into its trade book before our poll lands). On startup this
+        prevents the bot from believing it holds positions the broker already
+        squared off, and flags positions the broker holds but the bot missed.
+        """
+        try:
+            broker_positions = adapter.get_positions()
+        except Exception:
+            logger.exception("Position reconciliation skipped (broker query failed)")
+            return
+
+        broker_symbols: set[str] = set()
+        if not broker_positions:
+            logger.info("No broker positions returned — skipping reconciliation")
+            return
+        for p in broker_positions:
+            try:
+                if int(p.get("netqty", 0)) == 0:
+                    continue
+                ts = p.get("tradingsymbol", "")
+                sym = ts.replace("-EQ", ".NS") if ts.endswith("-EQ") else ts
+                broker_symbols.add(sym)
+            except (TypeError, ValueError):
+                continue
+
+        bot_symbols = set(self.portfolio_manager.get_open_position_symbols())
+
+        # Bot holds it, broker does not -> broker already squared/exited it.
+        for sym in bot_symbols - broker_symbols:
+            logger.warning(
+                "Reconciliation: %s open in bot but NOT at broker — closing in state",
+                sym,
+            )
+            try:
+                price = self.market_data_engine.get_current_price(sym)
+                if price <= 0:
+                    pos = self.portfolio_manager.get_position(sym)
+                    price = pos.entry_price if pos else 0.0
+                self.portfolio_manager.close_position(sym, price, 0.0)
+            except Exception:
+                logger.exception("Reconciliation failed to close phantom position %s", sym)
+
+        # Broker holds it, bot does not -> missed fill; operator must review.
+        for sym in broker_symbols - bot_symbols:
+            logger.error(
+                "Reconciliation: %s open at broker but NOT in bot — manual review needed",
+                sym,
+            )
 
     def run(self) -> None:
         """Start the trading system main loop."""
@@ -188,8 +244,8 @@ class TradingSystem:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Automated AI Trading System")
     parser.add_argument(
-        "--mode", choices=["paper", "live"], default="paper",
-        help="Trading mode (default: paper)",
+        "--mode", choices=["paper", "live"], default=None,
+        help="Trading mode (default: paper). Can also be set via STOCKS_TRADING_MODE env var.",
     )
     parser.add_argument(
         "--config", type=str, default=None,
@@ -208,9 +264,12 @@ def main() -> None:
     # Load configuration
     config = load_config(args.config)
 
-    # CLI args override config file
+    # CLI args override config file; env var overrides config default
     if args.mode:
         config["system"]["mode"] = args.mode
+    elif os.environ.get("STOCKS_TRADING_MODE"):
+        config["system"]["mode"] = os.environ["STOCKS_TRADING_MODE"].lower()
+    config["system"].setdefault("mode", "paper")
     if args.log_level:
         config["system"]["log_level"] = args.log_level
 

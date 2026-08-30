@@ -97,6 +97,7 @@ strategies:
   btc_trend_symbol: "BTC/USDT"
   btc_trend_timeframe: "1h"
   max_same_direction_positions: 3  # Max simultaneous BUY (or SELL) positions — limits correlated losses
+  disable_cooldown_hours: 6         # After a strategy is disabled for low win rate, re-enable after this many hours
 
 # --- Individual Strategy Configs ---
 trend_following:
