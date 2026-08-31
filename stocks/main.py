@@ -169,19 +169,34 @@ class TradingSystem:
         prevents the bot from believing it holds positions the broker already
         squared off, and flags positions the broker holds but the bot missed.
         """
+        # Delivery (CNC) positions settle into HOLDINGS, not the daily position
+        # book. Reconciling the positional service against the position book
+        # would flag every genuinely-held delivery position as a "ghost" and
+        # close it in state (booking a false zero-P&L). Use holdings for the
+        # position_trader service and the position book for intraday — mirroring
+        # the scheduler's _reconcile_positions.
+        is_delivery = (
+            get_nested(self.config, "scheduler", "service_origin") == "position_trader"
+        )
         try:
-            broker_positions = adapter.get_positions()
+            broker_rows = (
+                adapter.get_holdings() if is_delivery else adapter.get_positions()
+            )
         except Exception:
             logger.exception("Position reconciliation skipped (broker query failed)")
             return
 
         broker_symbols: set[str] = set()
-        if not broker_positions:
+        if not broker_rows:
             logger.info("No broker positions returned — skipping reconciliation")
             return
-        for p in broker_positions:
+        for p in broker_rows:
             try:
-                if int(p.get("netqty", 0)) == 0:
+                if not isinstance(p, dict):
+                    continue
+                # Position book uses netqty; holdings use quantity.
+                qty = p.get("netqty", p.get("quantity", 0))
+                if int(qty or 0) == 0:
                     continue
                 ts = p.get("tradingsymbol", "")
                 sym = ts.replace("-EQ", ".NS") if ts.endswith("-EQ") else ts

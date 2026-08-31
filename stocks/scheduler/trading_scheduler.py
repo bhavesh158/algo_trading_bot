@@ -74,6 +74,12 @@ class TradingScheduler:
         self._last_exit_time: dict[str, datetime] = {}
         self._exit_cooldown_seconds = sched_config.get("exit_cooldown_seconds", 60)
 
+        # Free-quantity-only exit guard: for the positional (delivery) service,
+        # only allow an exit when the shares being sold have settled to the
+        # freely sellable quantity at the broker. Selling T1/T0-unsettled
+        # delivery shares risks an exchange auction penalty, so we hold instead.
+        self._free_quantity_exit_only = sched_config.get("free_quantity_exit_only", False)
+
         # Startup hold: block entry signals for N minutes after scheduler start
         # so that the other trading service can open positions first,
         # preventing duplicate symbol trading at market open.
@@ -754,6 +760,31 @@ class TradingScheduler:
                             loss_threshold,
                         )
                         continue
+
+                # FREE-QUANTITY-ONLY EXIT GUARD (delivery positions):
+                # For the positional/delivery service, only sell shares that have
+                # settled to the broker's freely sellable quantity. Selling
+                # T1/T0-unsettled delivery shares risks an exchange auction
+                # penalty, so we hold the position until the shares settle.
+                if (
+                    self._free_quantity_exit_only
+                    and pos.side == OrderSide.BUY
+                    and system.order_executor.mode == TradingMode.LIVE
+                ):
+                    free_qty = system.order_executor.get_broker_free_quantity(symbol)
+                    if free_qty is not None and free_qty < pos.quantity:
+                        logger.info(
+                            "Holding %s [%s] — only %d/%d shares settled (free qty); "
+                            "deferring exit (reason=%s) until shares settle",
+                            symbol, pos.strategy_id, free_qty, pos.quantity, exit_reason,
+                        )
+                        continue
+                    if free_qty is None:
+                        logger.warning(
+                            "Free-quantity query failed for %s — proceeding with exit "
+                            "(reason=%s) to avoid being stuck in the position",
+                            symbol, exit_reason,
+                        )
 
                 exit_price = current_price
                 if system.order_executor.mode == TradingMode.LIVE:

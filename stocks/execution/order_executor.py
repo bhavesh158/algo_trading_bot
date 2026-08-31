@@ -245,6 +245,28 @@ class OrderExecutor:
                 continue
         return result
 
+    def get_broker_free_quantity(self, symbol: str) -> Optional[int]:
+        """Get the freely sellable (settled) quantity for a delivery symbol.
+
+        Returns the settled portion of a delivery holding, i.e. how many shares
+        can be sold today without risking an auction penalty (T1/T0 unsettled
+        shares are excluded). Returns None when the broker query failed so the
+        caller can avoid misreading a failure as zero sellable shares.
+        """
+        if self.mode != TradingMode.LIVE or self._broker_adapter is None:
+            return None
+        holder = getattr(self._broker_adapter, "get_free_holdings", None)
+        if holder is None:
+            return None
+        try:
+            free = holder()
+        except Exception:
+            logger.exception("Failed to query broker free holdings for %s", symbol)
+            return None
+        if free is None:
+            return None
+        return int(free.get(symbol, 0))
+
     def position_still_open(self, symbol: str) -> bool:
         """Check the broker's position book for an open position in `symbol`.
 

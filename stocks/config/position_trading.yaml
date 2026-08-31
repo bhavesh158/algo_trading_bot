@@ -105,6 +105,10 @@ scheduler:
   trade_cooldown_minutes: 15
   exit_cooldown_seconds: 60               # Prevent duplicate exit orders within 60s
   service_origin: position_trader       # Service identifier for tracking
+  # Only exit a delivery position once the shares being sold have settled to
+  # the broker's freely sellable quantity. Prevents auction-penalty risk from
+  # selling T1/T0-unsettled delivery shares. (Intraday service ignores this.)
+  free_quantity_exit_only: true
   # Cooldown applied to a symbol whose entry can't be afforded (insufficient
   # capital), so the bot doesn't re-spam unaffordable orders every cycle.
   insufficient_capital_cooldown_minutes: 30

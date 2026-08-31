@@ -31,6 +31,21 @@ _SCRIPMASTER_URL = "https://margincalculator.angelbroking.com/OpenAPI_File/files
 _SCRIPMASTER_TTL_SECONDS = 24 * 3600
 
 
+def _coerce_qty(row: dict[str, Any], key: str) -> Optional[int]:
+    """Safely extract a numeric quantity/price from a holdings row.
+
+    Returns None when the key is absent or non-numeric so callers can fall
+    back gracefully instead of raising or misreading a field.
+    """
+    val = row.get(key)
+    if val in (None, "", 0, "0", 0.0):
+        return None
+    try:
+        return int(float(val))
+    except (TypeError, ValueError):
+        return None
+
+
 class AngelOneAdapter(BaseBrokerAdapter):
     """Broker adapter for Angel One SmartAPI."""
 
@@ -299,11 +314,73 @@ class AngelOneAdapter(BaseBrokerAdapter):
         if not self._ensure_session() or self._smart_api is None:
             return None
         try:
-            holdings = self._smart_api.getHolding()
-            return holdings.get("data") or [] if holdings else []
+            resp = self._smart_api.allholding()
+            data = resp.get("data") if isinstance(resp, dict) else resp
+            # allholding() may nest holdings under a key (e.g. {"holdings": [...]}),
+            # or return a flat list of dicts directly.  Unwrap one level if needed.
+            if isinstance(data, dict):
+                for v in data.values():
+                    if isinstance(v, list) and v and isinstance(v[0], dict):
+                        return v
+                return []
+            if isinstance(data, list) and data and isinstance(data[0], dict):
+                return data
+            return []
         except Exception:
             logger.exception("Failed to get holdings")
             return None
+
+    def get_free_holdings(self) -> Optional[dict[str, int]]:
+        """Get deliverable holdins settled/free sellable qty, {symbol: freeqty}.
+
+        Same source as get_holdings() but returns only the FREELY SELLABLE
+        (settled) portion of each delivery holding, mapped to {symbol: freeqty}.
+        Delivery shares bought on T0 are unsettled until T+2; selling unsettled
+        shares risks an exchange auction penalty. This method lets the caller
+        restrict exits to settled shares only.
+
+        Returns None when the query failed, {} on success with no sellable qty,
+        mirroring get_holdings() semantics.
+        """
+        if not self._ensure_session() or self._smart_api is None:
+            return None
+        try:
+            resp = self._smart_api.allholding()
+            data = resp.get("data") if isinstance(resp, dict) else resp
+            # Unwrap one nesting level, mirroring get_holdings().
+            if isinstance(data, dict):
+                rows = next(
+                    (v for v in data.values()
+                     if isinstance(v, list) and v and isinstance(v[0], dict)),
+                    [],
+                )
+            elif isinstance(data, list) and data and isinstance(data[0], dict):
+                rows = data
+            else:
+                rows = []
+        except Exception:
+            logger.exception("Failed to get holdings for free quantity")
+            return None
+
+        result: dict[str, int] = {}
+        for h in rows:
+            try:
+                total = int(h.get("quantity", 0) or h.get("holdinqty", 0) or 0)
+                if total <= 0:
+                    continue
+                free = _coerce_qty(h, "freeqty")
+                if free is None:
+                    # Fallback: free = total - unsettled(pending) portion
+                    held = _coerce_qty(h, "holdinqty")
+                    free = (total - held) if held is not None else total
+                if free <= 0:
+                    continue
+                tradingsymbol = h.get("tradingsymbol", "")
+                symbol = tradingsymbol.replace("-EQ", ".NS")
+                result[symbol] = result.get(symbol, 0) + free
+            except (TypeError, ValueError):
+                continue
+        return result
 
     def get_account_balance(self) -> float:
         """Get available margin/balance."""
