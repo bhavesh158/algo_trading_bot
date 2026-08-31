@@ -55,6 +55,9 @@ class VWAPReversionStrategy(BaseStrategy):
         # ATR multiplier for stop-loss (wider = more room for trade to develop)
         self._atr_stop_multiplier = strat_config.get("atr_multiplier_stop", 5.0)  # CHANGED: 1.5→5.0
 
+        # Minimum hard-stop distance as % of entry (see BaseStrategy._apply_min_stop)
+        self._min_stop_pct = strat_config.get("min_stop_pct", 0.8)
+
         # Time exit: safety net
         self._max_hold_minutes = strat_config.get("max_hold_minutes", 240)  # Restored from 180
 
@@ -165,6 +168,9 @@ class VWAPReversionStrategy(BaseStrategy):
                 return None
 
             stop_loss = current_price - self._atr_stop_multiplier * atr_value
+            stop_loss = self._apply_min_stop(
+                current_price, stop_loss, self._atr_stop_multiplier * atr_value
+            )
             confidence = min(abs(deviation_pct) / 3.0, 1.0)
 
             # RSI confirmation boost (oversold = higher confidence)
@@ -223,6 +229,9 @@ class VWAPReversionStrategy(BaseStrategy):
                 return None
 
             stop_loss = current_price + self._atr_stop_multiplier * atr_value
+            stop_loss = self._apply_min_stop(
+                current_price, stop_loss, self._atr_stop_multiplier * atr_value
+            )
             confidence = min(abs(deviation_pct) / 3.0, 1.0)
 
             # RSI confirmation boost (overbought = higher confidence)

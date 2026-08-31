@@ -215,13 +215,25 @@ class TradingScheduler:
             )
             return
 
-        broker_positions = system.order_executor.get_broker_positions()
+        # Delivery (CNC) positions settle into HOLDINGS, not the daily position
+        # book. Reconciling the positional service against the position book
+        # would flag every genuinely-held delivery position as a 'ghost' and
+        # drop it (booking false P&L). Use holdings for the position_trader
+        # service and the position book for intraday.
+        is_delivery = self._service_origin == "position_trader"
+        if is_delivery:
+            broker_positions = system.order_executor.get_broker_holdings()
+            broker_source = "holdings"
+        else:
+            broker_positions = system.order_executor.get_broker_positions()
+            broker_source = "position book"
         internal_positions = system.portfolio_manager.get_open_positions()
 
         if broker_positions is None:
             logger.warning(
-                "Reconciliation skipped: broker positions query failed — keeping "
-                "internal positions (avoiding false ghost removal / duplicate re-entry)"
+                "Reconciliation skipped: broker %s query failed — keeping "
+                "internal positions (avoiding false ghost removal / duplicate re-entry)",
+                broker_source,
             )
             return
 

@@ -35,6 +35,8 @@ class OpeningRangeBreakoutStrategy(BaseStrategy):
         self._or_minutes = strat_config.get("opening_range_minutes", 15)
         self._buffer_pct = strat_config.get("breakout_buffer_pct", 0.15)  # Lower from 0.2
         self._atr_stop = strat_config.get("atr_multiplier_stop", 4.0)  # CHANGED: 1.5→4.0 for wider stops
+        # Minimum hard-stop distance as % of entry (see BaseStrategy._apply_min_stop)
+        self._min_stop_pct = strat_config.get("min_stop_pct", 0.8)
         self._atr_target = strat_config.get("atr_multiplier_target", 6.0)  # CHANGED: 3.0→6.0 for wider targets
         self._max_window_minutes = strat_config.get("max_window_minutes", 90)  # Extended from 60
         self._volume_confirm = strat_config.get("volume_confirm", False)  # Disabled by default
@@ -159,7 +161,10 @@ class OpeningRangeBreakoutStrategy(BaseStrategy):
                 strength=strength,
                 confidence=confidence,
                 entry_price=current_price,
-                stop_loss=current_price - self._atr_stop * atr_value,
+                stop_loss=self._apply_min_stop(
+                    current_price, current_price - self._atr_stop * atr_value,
+                    self._atr_stop * atr_value,
+                ),
                 target_price=current_price + self._atr_target * atr_value,
                 metadata={
                     "or_high": or_high, "or_low": or_low, "direction": "bullish",
@@ -188,7 +193,10 @@ class OpeningRangeBreakoutStrategy(BaseStrategy):
                 strength=strength,
                 confidence=confidence,
                 entry_price=current_price,
-                stop_loss=current_price + self._atr_stop * atr_value,
+                stop_loss=self._apply_min_stop(
+                    current_price, current_price + self._atr_stop * atr_value,
+                    self._atr_stop * atr_value,
+                ),
                 target_price=current_price - self._atr_target * atr_value,
                 metadata={
                     "or_high": or_high, "or_low": or_low, "direction": "bearish",

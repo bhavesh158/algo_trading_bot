@@ -120,6 +120,7 @@ momentum_breakout:
   breakout_threshold_pct: 0.8           # CHANGED: 1.0→0.8 (earlier entries)
   atr_multiplier_stop: 5.0              # CHANGED: 1.8→5.0 (wider stops for meaningful time)
   atr_multiplier_target: 8.0            # CHANGED: 5.0→8.0 (wider targets)
+  min_stop_pct: 0.8                     # Minimum hard-stop distance % of entry (no sub-1% stops)
   trailing_stop_atr: 2.0                # CHANGED: 1.5→2.0
   max_hold_minutes: 180                 # 3 hours max hold (intraday)
   require_vwap: false                   # CHANGED: true→false (was blocking valid breakouts)
@@ -133,6 +134,7 @@ opening_range_breakout:
   breakout_buffer_pct: 0.15
   atr_multiplier_stop: 4.0              # CHANGED: 1.2→4.0 (wider stops)
   atr_multiplier_target: 6.0            # CHANGED: 3.5→6.0 (wider targets)
+  min_stop_pct: 0.8                     # Minimum hard-stop distance % of entry (no sub-1% stops)
   max_window_minutes: 45                # CHANGED: 90→45 (morning only)
   volume_confirm: true                  # CHANGED: false→true (filter false breakouts)
   trailing_stop_atr: 1.2
@@ -152,6 +154,7 @@ vwap_reversion:
   trail_activate_pct: 0.8               # CHANGED: 0.5→0.8 (activate trailing at 0.8% profit)
   trailing_stop_pct: 0.8                # CHANGED: 0.4→0.8 (wider trailing to avoid noise exits)
   atr_multiplier_stop: 5.0              # CHANGED: 1.5→5.0 (wider stops for meaningful time)
+  min_stop_pct: 0.8                     # Minimum hard-stop distance % of entry (no sub-1% stops)
   max_hold_minutes: 300                 # 5 hours max hold (intraday) — was 240/4h
   rsi_capitulation_floor: 15
   rsi_overbought_ceiling: 85

@@ -210,6 +210,41 @@ class OrderExecutor:
                 continue
         return result
 
+    def get_broker_holdings(self) -> Optional[dict[str, int]]:
+        """Get delivery holdings from the broker, mapped as {symbol: netqty}.
+
+        Delivery (CNC) positions settle into holdings and are tracked here
+        rather than in the daily position book. Returns None when the broker
+        query failed so callers can avoid mistaking a failure for empty
+        holdings (which would otherwise drop real positions as 'ghosts').
+        """
+        if self.mode != TradingMode.LIVE or self._broker_adapter is None:
+            return {}
+        holder = getattr(self._broker_adapter, "get_holdings", None)
+        if holder is None:
+            return None
+        try:
+            holdings = holder()
+        except Exception:
+            logger.exception("Failed to query broker holdings")
+            return None
+        if holdings is None:
+            return None
+        result: dict[str, int] = {}
+        if not holdings:
+            return result
+        for h in holdings:
+            try:
+                qty = int(h.get("quantity", 0) or h.get("holdinqty", 0) or 0)
+                if qty == 0:
+                    continue
+                tradingsymbol = h.get("tradingsymbol", "")
+                symbol = tradingsymbol.replace("-EQ", ".NS")
+                result[symbol] = result.get(symbol, 0) + abs(qty)
+            except (TypeError, ValueError):
+                continue
+        return result
+
     def position_still_open(self, symbol: str) -> bool:
         """Check the broker's position book for an open position in `symbol`.
 

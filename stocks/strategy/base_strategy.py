@@ -37,6 +37,12 @@ class BaseStrategy(ABC):
         # Max hold duration (subclasses set > 0 to enable)
         self._max_hold_minutes: int = 0
 
+        # Minimum stop distance as a % of entry price. Prevents the ATR-based
+        # stop from collapsing to a few paise when ATR is near-zero early in the
+        # session (sparse candles), which caused instant stop-outs on tick noise.
+        # Subclasses read their own strategy section and may override this.
+        self._min_stop_pct: float = 0.8
+
     @abstractmethod
     def analyze(self, symbol: str) -> Optional[Signal]:
         """Analyze a symbol and return a Signal if a trade opportunity exists.
@@ -63,6 +69,27 @@ class BaseStrategy(ABC):
             return position.current_price <= position.stop_loss
         else:
             return position.current_price >= position.stop_loss
+
+    def _apply_min_stop(
+        self, entry_price: float, stop_loss: float, atr_distance: float = 0.0
+    ) -> float:
+        """Ensure a hard stop is at least `_min_stop_pct`% away from entry.
+
+        ATR-based stops collapse to near-zero when ATR is tiny (early session,
+        sparse candles), producing stop distances of a few paise that get
+        clipped instantly by normal tick noise. This widens the stop to a
+        meaningful minimum buffer when needed. `atr_distance` is the raw
+        ATR-derived distance so we only widen when the ATR stop is tighter than
+        the minimum.
+        """
+        if self._min_stop_pct <= 0 or entry_price <= 0:
+            return stop_loss
+        min_distance = entry_price * (self._min_stop_pct / 100.0)
+        if atr_distance >= min_distance:
+            return stop_loss
+        if stop_loss >= entry_price:  # SELL (stop above entry)
+            return entry_price + min_distance
+        return entry_price - min_distance
 
     def check_trailing_stop_pct(self, position: Position) -> bool:
         """Percentage-based trailing stop: exit when price drops `_trailing_stop_pct`%

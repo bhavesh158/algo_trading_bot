@@ -288,6 +288,23 @@ class AngelOneAdapter(BaseBrokerAdapter):
             logger.exception("Failed to get positions")
             return None
 
+    def get_holdings(self) -> Optional[list[dict]]:
+        """Get delivery holdings (demat/book), not the intraday position book.
+
+        Delivery (CNC) positions settle into holdings and appear here, while
+        the daily position book (get_positions) only tracks today's tradable
+        open positions. Returns None when the query failed and [] on success
+        with no holdings, mirroring get_positions() semantics.
+        """
+        if not self._ensure_session() or self._smart_api is None:
+            return None
+        try:
+            holdings = self._smart_api.getHolding()
+            return holdings.get("data") or [] if holdings else []
+        except Exception:
+            logger.exception("Failed to get holdings")
+            return None
+
     def get_account_balance(self) -> float:
         """Get available margin/balance."""
         if not self._connected or self._smart_api is None:

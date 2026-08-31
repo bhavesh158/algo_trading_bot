@@ -137,6 +137,7 @@ momentum_breakout:
   breakout_threshold_pct: 0.8
   atr_multiplier_stop: 6.0        # Widened from 2.5 for positional holds
   atr_multiplier_target: 10.0     # Widened from 6.0 for positional holds
+  min_stop_pct: 1.0               # Minimum hard-stop distance % of entry (no sub-1% stops)
   trailing_stop_atr: 3.0
   max_hold_minutes: 0             # 0 = no limit, can hold indefinitely
   require_vwap: false
@@ -147,6 +148,7 @@ opening_range_breakout:
   breakout_buffer_pct: 0.15
   atr_multiplier_stop: 5.0        # Widened from 1.5 for positional holds
   atr_multiplier_target: 8.0      # Widened from 4.5 for positional holds
+  min_stop_pct: 1.0               # Minimum hard-stop distance % of entry (no sub-1% stops)
   max_window_minutes: 45
   volume_confirm: true
   trailing_stop_atr: 2.0
@@ -163,6 +165,7 @@ vwap_reversion:
   trail_activate_pct: 1.2          # Widened from 1.0 for positional holds
   trailing_stop_pct: 1.2           # Widened from 0.8 for positional holds
   atr_multiplier_stop: 6.0         # Widened from 2.5 for positional holds
+  min_stop_pct: 1.0                # Minimum hard-stop distance % of entry (no sub-1% stops)
   max_hold_minutes: 0               # 0 = no limit, can hold indefinitely
   rsi_capitulation_floor: 15
   rsi_overbought_ceiling: 85
