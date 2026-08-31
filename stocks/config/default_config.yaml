@@ -79,6 +79,9 @@ scheduler:
   trade_cooldown_minutes: 15
   exit_cooldown_seconds: 60               # Prevent duplicate exit orders within 60s
   service_origin: intra_day             # Service identifier for tracking
+  # Cooldown applied to a symbol whose entry can't be afforded (insufficient
+  # capital), so the bot doesn't re-spam unaffordable orders every cycle.
+  insufficient_capital_cooldown_minutes: 30
   # Position trading controls
   square_off_at_pre_close: true         # Set false to allow overnight holds
   reset_daily_state_on_new_day: true    # Set false to carry capital across days

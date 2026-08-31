@@ -60,6 +60,12 @@ class TradingScheduler:
         self._cooldown_minutes = sched_config.get("trade_cooldown_minutes", 15)
         self._symbol_cooldown: dict[str, datetime] = {}  # symbol -> cooldown_end
 
+        # Cooldown (minutes) applied to a symbol blocked for insufficient capital,
+        # so the bot avoids re-spamming unaffordable orders every cycle.
+        self._insufficient_capital_cooldown_min = sched_config.get(
+            "insufficient_capital_cooldown_minutes", 30
+        )
+
         # Exit guard: prevent duplicate exit orders for the same symbol
         # within a single scheduler cycle (tracks symbols being exited NOW)
         self._pending_exits: set[str] = set()
@@ -555,6 +561,29 @@ class TradingScheduler:
             if quantity <= 0:
                 continue
 
+            # HARD capital-availability guard. Each service tracks its own
+            # available capital independently (intraday vs delivery). Before
+            # placing a live order, verify the position is affordable; if not,
+            # skip it AND cooldown the symbol so the bot stops re-arming a
+            # rejected/insufficient-funds order every cycle (which previously
+            # spammed the broker with rejected orders when balance was thin).
+            state = system.portfolio_manager.get_state()
+            notional = quantity * signal.entry_price
+            need = notional + system.order_executor.commission
+            if need > state.available_capital:
+                cooldown_min = self._insufficient_capital_cooldown_min
+                if cooldown_min > 0:
+                    self._symbol_cooldown[signal.symbol] = (
+                        datetime.now() + timedelta(minutes=cooldown_min)
+                    )
+                logger.warning(
+                    "Entry skipped %s: need ₹%.2f (qty=%d @ %.2f + comm) "
+                    "> available ₹%.2f — cooldown %s for %s min",
+                    signal.symbol, need, quantity, signal.entry_price,
+                    state.available_capital, signal.symbol, cooldown_min,
+                )
+                continue
+
             order = Order(
                 symbol=signal.symbol,
                 side=signal.side,
@@ -571,7 +600,19 @@ class TradingScheduler:
             filled_order = system.order_executor.execute_order(order, current_price)
 
             filled = filled_order.status.name == "FILLED"
-            if not filled and system.order_executor.position_still_open(signal.symbol):
+            status = filled_order.status
+            # Only fall back to broker-position probing when the broker did NOT
+            # give a definitive answer (still pending/submitted). If the broker
+            # explicitly rejected/cancelled/expired the order, that is
+            # authoritative: the order did NOT fill, so we must not treat it as
+            # filled just because the broker happens to hold shares in the
+            # symbol (a rejected order + an unrelated existing position must
+            # not be conflated into a fake fill at a made-up entry price).
+            if (
+                not filled
+                and status in (OrderStatus.PENDING, OrderStatus.SUBMITTED)
+                and system.order_executor.position_still_open(signal.symbol)
+            ):
                 logger.warning(
                     "Entry for %s not confirmed by poll but broker shows position — "
                     "treating as filled", signal.symbol,
@@ -581,6 +622,13 @@ class TradingScheduler:
                     filled_order.filled_price = current_price
                 if filled_order.filled_quantity <= 0:
                     filled_order.filled_quantity = quantity
+            elif not filled and status in (
+                OrderStatus.REJECTED, OrderStatus.CANCELLED, OrderStatus.EXPIRED,
+            ):
+                logger.warning(
+                    "Entry for %s %s by broker — NOT opened (not treating as filled)",
+                    signal.symbol, status.name,
+                )
 
             if filled:
                 entry_comm = system.order_executor.commission
