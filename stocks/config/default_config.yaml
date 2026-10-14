@@ -24,7 +24,7 @@ system:
   market: NSE
 
 account:
-  initial_capital: 100000.0               # ₹1L capital (allows 2-3 positions of ₹30-50k each)
+  initial_capital: 160000.0               # ₹1.6L (2026-09-03: +₹60k top-up to allow 5 concurrent positions)
   currency: INR
   profit_tax_pct: 15.0
 
@@ -32,7 +32,7 @@ schedule:
   pre_market_start: "08:45"
   market_open: "09:15"
   market_close: "15:30"
-  pre_close_start: "15:07"  # square off before Angel One blocks intraday orders near close (~15:15)
+  pre_close_start: "15:07"  # 2026-09-10: back to 15:07 — 15:10 exits ALL rejected (Angel intraday block already live)
   post_market_end: "16:00"
   # NSE public holidays (ISO dates) when the market is closed. Weekends are
   # handled automatically. Update as needed for the current year.
@@ -51,7 +51,7 @@ selection:
   min_volume: 500000
   min_price: 50.0
   max_price: 10000.0
-  max_watchlist_size: 20
+  max_watchlist_size: 40   # widened 20→40 so top gainers (Adani, banks, autos) get scanned
   index_symbols:
     - "^NSEI"
     - "^NSEBANK"
@@ -67,12 +67,22 @@ selection:
     - "VEDL.NS"
     - "COALINDIA.NS"
   sector_momentum_boost: 25
+  # NSE movers feed (free, no key): merge day's gainers/losers/most-active
+  # into the candidate pool so momentum/ORB fish live movers. Fail-open.
+  movers:
+    enabled: true
+    max_per_source: 15
+    min_ltp: 50.0
+    max_ltp: 10000.0
 
 # ============================================================
 # SCHEDULER — Trade Frequency Control
 # ============================================================
 scheduler:
   max_entries_per_cycle: 1              # One quality entry at a time
+  max_daily_entries: 3                # 2026-09-23: 5→3 hard day budget (was 5; Sep-22 used 4, Sep-23 used 1)
+  early_max_positions: 3              # 2026-09-09: before gate time, max 3 fills (first seconds)
+  full_access_time: "09:30"           # 2026-09-09: at/after this, remaining slots fill together (change to "09:20" if wanted earlier)
   min_expected_profit_pct: 1.0          # Must cover commission + profit
   min_hold_minutes: 15                  # Avoid noise exits
   signal_cooldown_seconds: 600          # 10 min cooldown
@@ -125,7 +135,7 @@ momentum_breakout:
   atr_multiplier_target: 8.0            # CHANGED: 5.0→8.0 (wider targets)
   min_stop_pct: 1.5                     # Minimum hard-stop distance % of entry (beyond normal intraday dip)
   trailing_stop_atr: 2.0                # CHANGED: 1.5→2.0
-  max_hold_minutes: 180                 # 3 hours max hold (intraday)
+  max_hold_minutes: 480                 # 8 hours max hold (intraday) — hold till close
   require_vwap: false                   # CHANGED: true→false (was blocking valid breakouts)
   volume_decay_exit_ratio: 0.7
 
@@ -141,7 +151,7 @@ opening_range_breakout:
   max_window_minutes: 45                # CHANGED: 90→45 (morning only)
   volume_confirm: true                  # CHANGED: false→true (filter false breakouts)
   trailing_stop_atr: 1.2
-  max_hold_minutes: 150                 # 2.5 hours max hold (intraday)
+  max_hold_minutes: 480                 # 8 hours max hold (intraday)
   min_range_atr_ratio: 0.5              # CHANGED: 0.3→0.5 (meaningful range)
 
 # ============================================================
@@ -158,7 +168,7 @@ vwap_reversion:
   trailing_stop_pct: 0.8                # CHANGED: 0.4→0.8 (wider trailing to avoid noise exits)
   atr_multiplier_stop: 5.0              # CHANGED: 1.5→5.0 (wider stops for meaningful time)
   min_stop_pct: 1.5                     # Minimum hard-stop distance % of entry (beyond normal intraday dip)
-  max_hold_minutes: 300                 # 5 hours max hold (intraday) — was 240/4h
+  max_hold_minutes: 480                 # 8 hours max hold (intraday) — was 300/5h
   rsi_capitulation_floor: 15
   rsi_overbought_ceiling: 85
 
@@ -199,12 +209,13 @@ regime_detection:
 # RISK MANAGEMENT — Concentrated Capital, Tighter Controls
 # ============================================================
 risk:
-  max_risk_per_trade_pct: 0.75          # CHANGED: 1.0→0.75 (tighter risk)
-  max_open_positions: 3                 # CHANGED: 4→2→3 (₹2L allows 3 positions of ₹66k)
+  max_risk_per_trade_pct: 0.75          # Pct-based risk; hard Rs cap below binds first at current capital
+  max_loss_per_trade_inr: 500.00      # 2026-09-08: HARD cap — stop-out can never exceed Rs 500/trade, any capital
+  max_open_positions: 3                 # 2026-09-23: 5→3 to match day budget (early gate 3 = full access now)
   max_daily_loss_pct: 2.0               # CHANGED: 3.0→2.0 (stop bleeding earlier)
-  max_total_exposure_pct: 70.0          # CHANGED: 60.0→70.0 (₹2L can handle more exposure)
+  max_total_exposure_pct: 90.0          # 2026-09-09: 80→90 (room for 6th slot; 6×~Rs25k≈96% @Rs1.56L)
   max_single_stock_exposure_pct: 35.0   # Allow larger positions
-  min_risk_reward_ratio: 2.0            # CHANGED: 1.5→2.0 (better R:R required)
+  min_risk_reward_ratio: 1.4             # TEST 2026-09-08: 2.0 blocked momentum (1.6) & ORB (1.5) 100%; 1.4 lets them validate
 
 # ============================================================
 # POSITION SIZING — Commission-Aware (CRITICAL FIX)
@@ -252,6 +263,8 @@ execution:
     - "VEDL.NS"
     - "ETERNAL.NS"
     - "JIOFIN.NS"
+    - "TMPV.NS"          # AB4036 cautionary (rejected Sep-04 & Sep-08)
+    - "ADANIENSOL.NS"    # AB4036 cautionary (rejected Sep-08 13:52 x2)
 
 paper_trading:
   slippage_pct: 0.05

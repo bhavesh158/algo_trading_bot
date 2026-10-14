@@ -64,13 +64,33 @@ selection:
     - "WIPRO.NS"
     - "HCLTECH.NS"
     - "NTPC.NS"
+    - "CIPLA.NS"
+    - "DRREDDY.NS"
+    - "BAJAJ-AUTO.NS"
+    - "ULTRACEMCO.NS"
+    - "TECHM.NS"
+    - "PNB.NS"
+    - "JSWSTEEL.NS"
+    - "GODREJCP.NS"
+    - "TMPV.NS"
+    - "POWERGRID.NS"
+    - "EICHERMOT.NS"
+    - "HAL.NS"
+    - "SHREECEM.NS"
+    - "ADANIPORTS.NS"
+    - "ADANIENT.NS"
+    - "TATASTEEL.NS"
+    - "HINDALCO.NS"
+    - "TATACONSUM.NS"
+    - "DIVISLAB.NS"
+    - "BRITANNIA.NS"
   min_volume: 500000
   min_price: 50.0
   max_price: 10000.0
-  max_watchlist_size: 20
+  max_watchlist_size: 40   # widened to match the expanded positional_symbols list
 
 account:
-  initial_capital: 100000.0     # ₹1L capital
+  initial_capital: 140000.0     # ₹1.4L (2026-09-03: +₹40k top-up)
   currency: INR
   profit_tax_pct: 15.0
 
@@ -92,6 +112,8 @@ execution:
     - "VEDL.NS"
     - "ETERNAL.NS"
     - "JIOFIN.NS"
+    - "TMPV.NS"          # AB4036 cautionary (rejected Sep-04 & Sep-08)
+    - "ADANIENSOL.NS"    # AB4036 cautionary (rejected Sep-08 13:52 x2)
 
 # ============================================================
 # SCHEDULER — Position Trading Controls
@@ -182,8 +204,8 @@ vwap_reversion:
 # ============================================================
 risk:
   max_risk_per_trade_pct: 0.75
-  max_open_positions: 3
-  max_daily_loss_pct: 2.0
+  max_open_positions: 5
+  max_daily_loss_pct: 4.0               # 2026-09-09: 2.0 tripped on unrealized carry (-2.3%); delivery tolerates wobble
   max_total_exposure_pct: 70.0
   min_risk_reward_ratio: 2.0
 

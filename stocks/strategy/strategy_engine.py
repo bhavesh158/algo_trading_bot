@@ -355,6 +355,13 @@ class StrategyEngine:
     def strategies(self) -> list[BaseStrategy]:
         return list(self._strategies)
 
+    def get_strategy(self, strategy_id: str) -> Optional[BaseStrategy]:
+        """Return the loaded strategy instance by id, or None if not found."""
+        for s in self._strategies:
+            if s.strategy_id == strategy_id:
+                return s
+        return None
+
     def disable_strategy(self, strategy_id: str) -> None:
         for s in self._strategies:
             if s.strategy_id == strategy_id:

@@ -91,6 +91,15 @@ class PositionSizer:
         confidence_factor = max(0.5, min(1.0, signal.confidence))
         capital_at_risk *= confidence_factor
 
+        # Hard per-trade loss cap (Rs): a stop-out can never lose more than
+        # this, regardless of capital. Stop distances stay wide (noise-proof);
+        # quantity absorbs the constraint instead.
+        max_loss_cap = float(
+            self.config.get("risk", {}).get("max_loss_per_trade_inr", 0) or 0
+        )
+        if max_loss_cap > 0:
+            capital_at_risk = min(capital_at_risk, max_loss_cap)
+
         # Calculate raw quantity
         quantity = capital_at_risk / risk_per_share
 
@@ -137,6 +146,19 @@ class PositionSizer:
                         "Cannot raise %s to min_qty %d (exceeds max_position_pct cap %.0f)",
                         signal.symbol, min_qty, max_value,
                     )
+
+        # Hard Rs cap wins over everything above (including the commission
+        # minimum): a stop-out must never exceed max_loss_per_trade_inr.
+        # Small positions mean higher commission drag — accepted trade-off.
+        # Stops themselves stay wide, so paise-noise can't trigger the cap.
+        if max_loss_cap > 0 and risk_per_share > 0:
+            cap_qty = math.floor(max_loss_cap / risk_per_share)
+            if cap_qty < result:
+                logger.info(
+                    "Position size for %s capped %d→%d (max loss Rs%.0f)",
+                    signal.symbol, result, max(cap_qty, 0), max_loss_cap,
+                )
+                result = max(cap_qty, 0)
 
         logger.debug(
             "Position size for %s: qty=%d (risk_per_share=%.2f, capital_at_risk=%.2f, conf=%.2f)",

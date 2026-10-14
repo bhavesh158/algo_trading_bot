@@ -149,6 +149,7 @@ def _position_to_dict(pos: Position) -> dict:
         "entry_order_id": pos.entry_order_id,
         "opened_at": pos.opened_at.isoformat() if pos.opened_at else None,
         "entry_commission": pos.entry_commission,
+        "service_origin": pos.service_origin,
     }
 
 
@@ -168,4 +169,5 @@ def _dict_to_position(data: dict) -> Position:
         opened_at=opened_at,
         status=PositionStatus.OPEN,
         entry_commission=data.get("entry_commission", 0.0),
+        service_origin=data.get("service_origin", ""),
     )

@@ -242,9 +242,51 @@ class AngelOneAdapter(BaseBrokerAdapter):
 
         except Exception:
             logger.exception("Failed to submit order to Angel One")
+            # Timeout ambiguity (2026-09-24: 4 fills marked REJECTED on
+            # ReadTimeout, ran naked all day, ~-5.2k). The order may HAVE
+            # filled at the broker. Verify via the day position book before
+            # declaring rejected: an untracked fill is worse than a tracked
+            # uncertain one (stops/trailing/budget all apply once tracked).
+            try:
+                if self._broker_position_open(trading_symbol):
+                    order.status = OrderStatus.FILLED
+                    order.filled_quantity = quantity
+                    order.filled_price = 0.0  # caller falls back to live price
+                    order.error_message = (
+                        "unconfirmed-fill: submit timed out but broker "
+                        "holds the position; tracked conservatively"
+                    )
+                    logger.warning(
+                        "[LIVE] %s submit timed out BUT broker holds %s — "
+                        "tracking as FILLED (unconfirmed)",
+                        trading_symbol, trading_symbol,
+                    )
+                    return order
+            except Exception:
+                logger.exception("Fill verification failed for %s", trading_symbol)
             order.status = OrderStatus.REJECTED
 
         return order
+
+    def _broker_position_open(self, trading_symbol: str) -> bool:
+        """True if the day position book shows nonzero (non-delivery) qty."""
+        try:
+            positions = self.get_positions()
+        except Exception:
+            return False
+        if not positions:
+            return False
+        for p in positions:
+            if not isinstance(p, dict) or p.get("tradingsymbol") != trading_symbol:
+                continue
+            if str(p.get("producttype", "")).upper() in ("CNC", "DELIVERY"):
+                continue
+            try:
+                if int(float(p.get("netqty", 0) or 0)) != 0:
+                    return True
+            except (TypeError, ValueError):
+                continue
+        return False
 
     def cancel_order(self, order_id: str) -> bool:
         """Cancel an order."""

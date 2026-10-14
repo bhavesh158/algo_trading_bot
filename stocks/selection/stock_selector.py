@@ -100,6 +100,44 @@ class StockSelector:
         # avoid_pairs  -> temporarily remove from candidate pool
         effective_pool = list(self._candidate_pool)
         effective_priority = set(self._priority_symbols)
+
+        # Exchange-blocked (cautionary) symbols can never fill — drop them
+        # from the pool so their slots go to tradable candidates.
+        blocked = set(
+            self.config.get("execution", {}).get("blacklisted_symbols", [])
+        )
+        if blocked:
+            effective_pool = [s for s in effective_pool if s not in blocked]
+            effective_priority = {s for s in effective_priority if s not in blocked}
+            logger.info(
+                "Excluding %d exchange-blocked symbol(s) from pool: %s",
+                len(blocked & set(self._candidate_pool)),
+                ", ".join(sorted(blocked & set(self._candidate_pool)) or blocked),
+            )
+
+        # NSE movers feed: merge today's gainers/losers/most-active into the
+        # pool so momentum/ORB fish where money is moving, not just the
+        # static list. Fail-open (empty on any error).
+        movers_cfg = self.config.get("selection", {}).get("movers", {})
+        if movers_cfg.get("enabled", False):
+            try:
+                from stocks.selection.movers_feed import fetch_movers
+
+                mv = fetch_movers(
+                    max_per_source=int(movers_cfg.get("max_per_source", 15)),
+                    min_ltp=float(movers_cfg.get("min_ltp", 50.0)),
+                    max_ltp=float(movers_cfg.get("max_ltp", 10000.0)),
+                )
+                fresh = [s for lst in mv.values() for s in lst
+                         if s not in blocked and s not in effective_pool]
+                if fresh:
+                    effective_pool.extend(fresh)
+                    logger.info(
+                        "Movers feed merged: +%d symbols (%d pool total)",
+                        len(fresh), len(effective_pool),
+                    )
+            except Exception:
+                logger.warning("Movers merge failed — static pool only", exc_info=True)
         if self._macro_analyst is not None:
             macro_ctx = self._macro_analyst.get_context()
             if macro_ctx and macro_ctx.is_valid:

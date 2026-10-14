@@ -86,15 +86,24 @@ class PortfolioManager:
     def open_position(
         self, order: Order, entry_commission: float = 0.0,
         target_price: float = 0.0, max_hold_minutes: int = 0,
+        min_stop_pct: float = 0.0,
     ) -> Position:
-        """Create a new position from a filled order."""
+        """Create a new position from a filled order.
+
+        The hard stop is re-anchored to the actual fill price: strategies
+        compute their stop from the signal candle close, but a live market
+        order can fill far from that reference (e.g. an opening spike fades
+        before the fill lands). Without re-anchoring, the position can open
+        with a stop only a few paise below the real entry and get clipped by
+        tick noise (HINDPETRO 2026-09-01: stop 0.09% under its fill).
+        """
         position = Position(
             symbol=order.symbol,
             side=order.side,
             quantity=order.filled_quantity,
             entry_price=order.filled_price,
             current_price=order.filled_price,
-            stop_loss=order.stop_price,
+            stop_loss=self._anchor_stop_to_fill(order, min_stop_pct),
             strategy_id=order.strategy_id,
             entry_order_id=order.id,
             entry_commission=entry_commission,
@@ -129,6 +138,38 @@ class PortfolioManager:
         self._publish_update()
         self._save_state()
         return position
+
+    def _anchor_stop_to_fill(self, order: Order, min_stop_pct: float) -> float:
+        """Re-anchor a signal-anchored hard stop to the actual fill price.
+
+        The strategy sets `order.stop_price` relative to the signal candle
+        close (`order.price`), not the executed fill (`order.filled_price`).
+        When a market order slips from the reference (common at the open
+        auction), that leaves the position with a hair-trigger stop.
+
+        Two adjustments, applied against the fill price:
+          1. Re-base the stop to preserve the intended risk distance that was
+             measured from the signal reference price.
+          2. Enforce the strategy's min-stop floor, so the stop can never sit
+             tighter than `min_stop_pct`% below (BUY) / above (SELL) entry.
+        """
+        fill = order.filled_price
+        ref = order.price
+        raw_stop = order.stop_price
+        if fill <= 0 or raw_stop <= 0:
+            return raw_stop
+        floor = min_stop_pct if min_stop_pct > 0 else 0.8
+
+        if order.side == OrderSide.BUY:
+            intended_dist = ref - raw_stop
+            if intended_dist < 0:
+                return fill - fill * (floor / 100.0)
+            return min(fill - intended_dist, fill * (1 - floor / 100.0))
+        else:
+            intended_dist = raw_stop - ref
+            if intended_dist < 0:
+                return fill + fill * (floor / 100.0)
+            return max(fill + intended_dist, fill * (1 + floor / 100.0))
 
     def close_position(self, symbol: str, exit_price: float, exit_commission: float = 0.0) -> Optional[Trade]:
         """Close an open position and record the completed trade."""

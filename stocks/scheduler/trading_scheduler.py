@@ -11,6 +11,7 @@ The scheduler runs the main loop and delegates to components.
 from __future__ import annotations
 
 import logging
+import random
 import time as _time
 from datetime import datetime, time, timedelta
 from typing import Any
@@ -22,6 +23,23 @@ from stocks.core.models import Order
 from datetime import timedelta
 
 logger = logging.getLogger(__name__)
+
+
+def _expected_profit_pct(signal: Any) -> float:
+    """Expected profit % of a signal (target vs entry), side-aware.
+
+    Signals without a usable target sort last (0.0).
+    """
+    try:
+        entry = float(getattr(signal, "entry_price", 0) or 0)
+        target = float(getattr(signal, "target_price", 0) or 0)
+        if entry <= 0 or target <= 0:
+            return 0.0
+        if getattr(signal.side, "name", "") == "SELL":
+            return (entry - target) / entry * 100
+        return (target - entry) / entry * 100
+    except (TypeError, ValueError, ZeroDivisionError):
+        return 0.0
 
 
 class TradingScheduler:
@@ -48,8 +66,27 @@ class TradingScheduler:
         # Anti-churn / scheduler guards
         sched_config = config.get("scheduler", {})
         self._max_entries_per_cycle = sched_config.get("max_entries_per_cycle", 1)
+        # Hard day budget: at most max_daily_entries fills per day (0 = unlimited).
+        # Closed slots are NOT refilled — once the budget is spent, entries stop
+        # for the day. Recounted from the journal at pre-market so restarts
+        # can't reset it.
+        self._max_daily_entries = sched_config.get("max_daily_entries", 0)
+        self._daily_entries = 0
         self._min_expected_profit_pct = sched_config.get("min_expected_profit_pct", 0.5)
         self._max_open_positions = config.get("risk", {}).get("max_open_positions", 3)
+        # Order in which validated signals are attempted each cycle:
+        # 'best_first' (default) = highest expected-profit % first,
+        # 'random' = shuffled, 'fifo' = legacy watchlist order.
+        self._signal_order = sched_config.get("signal_order", "best_first")
+        # Timed slot release: before full_access_time only early_max_positions
+        # fills (first seconds); at/after it, all max_open_positions slots
+        # fill together (1/cycle ≈ all within ~20s).
+        self._early_max_positions = sched_config.get("early_max_positions", 0)
+        self._full_access_time = self._parse_time(
+            sched_config.get("full_access_time", "09:30")
+        )
+        # Cumulative fills before gate time (closes don't refund them).
+        self._early_fills = 0
 
         # Position trading controls
         self._square_off_at_pre_close = sched_config.get("square_off_at_pre_close", True)
@@ -263,6 +300,17 @@ class TradingScheduler:
                 # Record as a zero-P&L close (we don't know the actual exit price)
                 system.portfolio_manager.close_position(symbol, pos.current_price, 0.0)
                 system.order_executor.release_symbol(symbol)
+                # Same post-close cooldown as a strategy exit: a manual close
+                # must not re-arm the symbol 4 seconds later (HINDPETRO Sep-10:
+                # ghost-removed 09:58:39, re-entered 09:58:43).
+                if self._cooldown_minutes > 0:
+                    self._symbol_cooldown[symbol] = (
+                        datetime.now() + timedelta(minutes=self._cooldown_minutes)
+                    )
+                    logger.debug(
+                        "Intra-day cooldown set for ghost-removed %s: %d min",
+                        symbol, self._cooldown_minutes,
+                    )
                 ghost_count += 1
             elif abs(broker_qty) != abs(pos.quantity):
                 # Quantity mismatch — user partially closed or added
@@ -306,6 +354,35 @@ class TradingScheduler:
                 self._run_pre_close(system)
                 self._pre_close_done = True
 
+    def _count_today_opens(self, before: str | None = None) -> int:
+        """Count today's OPEN fills from the trade journal (restart-proof).
+
+        If `before` ("HH:MM") is given, only count fills strictly earlier
+        than that time. Returns 0 if the journal is missing/unreadable.
+        """
+        import csv
+        from pathlib import Path
+
+        data_dir = self.config.get("system", {}).get("data_dir", "data_store")
+        path = Path(data_dir) / "trade_journal.csv"
+        today = datetime.now().date().isoformat()
+        try:
+            with open(path, newline="") as f:
+                count = 0
+                for row in csv.DictReader(f):
+                    if row.get("event") != "OPEN":
+                        continue
+                    ts = row.get("timestamp") or ""
+                    if ts[:10] != today:
+                        continue
+                    if before is not None and ts[11:16] >= before:
+                        continue
+                    count += 1
+                return count
+        except (OSError, ValueError):
+            logger.warning("Day-budget recount failed for %s — starting at 0", path)
+            return 0
+
     def _run_pre_market(self, system: Any) -> None:
         """Pre-market phase: load data, build watchlist, prepare strategies."""
         logger.info("--- PRE-MARKET PHASE ---")
@@ -317,6 +394,16 @@ class TradingScheduler:
         # measured across the full multi-day hold.
         system.portfolio_manager.reset_daily_state()
         system.risk_manager.reset_daily_state()
+        # Recount today's fills from the journal (restart-proof day budget).
+        self._daily_entries = self._count_today_opens()
+        self._early_fills = self._count_today_opens(
+            before=self._full_access_time.strftime("%H:%M")
+        )
+        if self._max_daily_entries > 0:
+            logger.info(
+                "Day entry budget: %d/%d fills used",
+                self._daily_entries, self._max_daily_entries,
+            )
         if self._reset_daily_state_on_new_day:
             system.drawdown_monitor.reset_daily_state()
         else:
@@ -336,10 +423,27 @@ class TradingScheduler:
             # Store watchlist for use in market hours
             system.stock_selector._watchlist = watchlist
         else:
-            # Load daily data for stock selection scoring
+            # Load daily data for stock selection scoring (static pool +
+            # NSE movers so newcomers have D1 history to score on).
             from stocks.selection.stock_selector import NIFTY50_SYMBOLS
-            logger.info("Loading daily data for %d candidates...", len(NIFTY50_SYMBOLS))
-            system.market_data_engine.load_daily_data(NIFTY50_SYMBOLS)
+            candidates = list(NIFTY50_SYMBOLS)
+            movers_cfg = selection_config.get("movers", {})
+            if movers_cfg.get("enabled", False):
+                try:
+                    from stocks.selection.movers_feed import fetch_movers
+
+                    mv = fetch_movers(
+                        max_per_source=int(movers_cfg.get("max_per_source", 15)),
+                        min_ltp=float(movers_cfg.get("min_ltp", 50.0)),
+                        max_ltp=float(movers_cfg.get("max_ltp", 10000.0)),
+                    )
+                    extra = [s for lst in mv.values() for s in lst if s not in candidates]
+                    candidates.extend(extra)
+                    logger.info("Movers pre-load: +%d symbols for daily data", len(extra))
+                except Exception:
+                    logger.warning("Movers pre-load failed — static pool only", exc_info=True)
+            logger.info("Loading daily data for %d candidates...", len(candidates))
+            system.market_data_engine.load_daily_data(candidates)
 
             # Build watchlist
             system.stock_selector.build_watchlist()
@@ -463,10 +567,39 @@ class TradingScheduler:
             logger.debug("Pre-open: skipping signal processing (market opens at %s)", self._market_open)
             return
 
+        # Timed slot release: before gate time, max early_max_positions FILLS
+        # total (a fill that closes in seconds does NOT free room for another).
+        if self._early_max_positions > 0 and now.time() < self._full_access_time:
+            if self._early_fills >= self._early_max_positions:
+                entry_cap = 0
+            else:
+                entry_cap = min(self._early_max_positions, self._max_open_positions)
+        else:
+            entry_cap = self._max_open_positions
+
+        # Hard day budget: fills used up, including across restarts.
+        day_budget_left = (
+            max(self._max_daily_entries - self._daily_entries, 0)
+            if self._max_daily_entries > 0
+            else 1
+        )
+        if day_budget_left <= 0:
+            signals = []  # exits below still run; entries done for the day
+
+        # Signal pick order: 'best_first' sorts validated signals by expected
+        # profit % (target vs entry) so the juiciest idea is attempted first
+        # instead of watchlist order; 'random' shuffles for fair rotation;
+        # 'fifo' keeps legacy order.
+        if self._signal_order == "random":
+            signals = random.sample(signals, len(signals))
+        elif self._signal_order == "best_first":
+            signals = sorted(signals, key=_expected_profit_pct, reverse=True)
+
         for signal in signals:
             # Hard limit: re-check position count before EACH entry
+            # (timed gate: entry_cap is 3 before 09:30, full size after)
             open_count = len(system.portfolio_manager.get_open_positions())
-            if open_count >= self._max_open_positions:
+            if open_count >= entry_cap:
                 break
 
             # Throttle: max entries per cycle
@@ -639,13 +772,19 @@ class TradingScheduler:
             if filled:
                 entry_comm = system.order_executor.commission
                 max_hold = signal.metadata.get("max_hold_minutes", 0)
+                strategy = system.strategy_engine.get_strategy(signal.strategy_id)
+                min_stop_pct = getattr(strategy, "_min_stop_pct", 0.0) if strategy else 0.0
                 pos = system.portfolio_manager.open_position(
                     filled_order, entry_commission=entry_comm,
                     target_price=signal.target_price, max_hold_minutes=max_hold,
+                    min_stop_pct=min_stop_pct,
                 )
                 system.trade_journal.log_open(filled_order, pos)
                 entries_this_cycle += 1
                 cycle_entry_symbols.add(signal.symbol)
+                self._daily_entries += 1
+                if datetime.now().time() < self._full_access_time:
+                    self._early_fills += 1
 
         # Check exit conditions for open positions
         # Only consider positions from this service
