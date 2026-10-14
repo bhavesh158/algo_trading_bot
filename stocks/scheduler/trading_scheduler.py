@@ -16,7 +16,7 @@ import time as _time
 from datetime import datetime, time, timedelta
 from typing import Any
 
-from stocks.core.enums import OrderSide, OrderStatus, OrderType, TradingMode, TradingPhase
+from stocks.core.enums import MarketRegime, OrderSide, OrderStatus, OrderType, Timeframe, TradingMode, TradingPhase
 from stocks.core.event_bus import EventBus
 from stocks.core.events import ScheduleEvent
 from stocks.core.models import Order
@@ -87,6 +87,21 @@ class TradingScheduler:
         )
         # Cumulative fills before gate time (closes don't refund them).
         self._early_fills = 0
+
+        # Bullish-day-only gate (2026-10-13): when enabled, new entries are
+        # taken only on bullish days — Nifty day-change vs prev close above
+        # bullish_day_min_change_pct, plus intraday regime TRENDING_UP when
+        # bullish_require_regime_up is set. On bullish days only BUY signals
+        # are attempted (SELL blocked) when bullish_buy_only is set. Exits
+        # always run; the gate only suppresses entries. Fail-open: missing
+        # index data leaves entries allowed (with a warning).
+        self._bullish_days_only = sched_config.get("bullish_days_only", False)
+        self._bullish_day_min_change_pct = float(
+            sched_config.get("bullish_day_min_change_pct", 0.2)
+        )
+        self._bullish_require_regime_up = sched_config.get("bullish_require_regime_up", True)
+        self._bullish_buy_only = sched_config.get("bullish_buy_only", True)
+        self._last_bull_gate: bool | None = None
 
         # Position trading controls
         self._square_off_at_pre_close = sched_config.get("square_off_at_pre_close", True)
@@ -383,6 +398,36 @@ class TradingScheduler:
             logger.warning("Day-budget recount failed for %s — starting at 0", path)
             return 0
 
+    def _bullish_day_status(self, system: Any) -> tuple[bool, float]:
+        """Return (is_bullish_day, nifty_day_change_pct).
+
+        Bullish = Nifty 50 current price vs previous daily close at or above
+        bullish_day_min_change_pct. Fail-open (True, 0.0) when index data is
+        unavailable so a Yahoo hiccup never silently halts all trading.
+        """
+        index_symbols = self.config.get("selection", {}).get("index_symbols", ["^NSEI"])
+        index_symbol = (index_symbols or ["^NSEI"])[0]
+        try:
+            current = float(system.market_data_engine.get_current_price(index_symbol) or 0)
+            daily = system.market_data_engine.get_dataframe(index_symbol, Timeframe.D1)
+            if current <= 0 or daily is None or len(daily) < 2:
+                raise ValueError("insufficient index data")
+            today = datetime.now().date()
+            last_day = daily.index[-1].date() if hasattr(daily.index[-1], "date") else today
+            prev_close = float(
+                daily["close"].iloc[-2] if last_day == today else daily["close"].iloc[-1]
+            )
+            if prev_close <= 0:
+                raise ValueError("bad prev close")
+            day_chg = (current - prev_close) / prev_close * 100
+            return day_chg >= self._bullish_day_min_change_pct, day_chg
+        except (TypeError, ValueError, IndexError, KeyError, AttributeError) as e:
+            logger.warning(
+                "Bullish-day check: no usable index data for %s (%s) — fail-open (entries allowed)",
+                index_symbol, e,
+            )
+            return True, 0.0
+
     def _run_pre_market(self, system: Any) -> None:
         """Pre-market phase: load data, build watchlist, prepare strategies."""
         logger.info("--- PRE-MARKET PHASE ---")
@@ -554,6 +599,29 @@ class TradingScheduler:
 
         # Run strategies to generate signals
         signals = system.strategy_engine.run_strategies(watchlist)
+
+        # Bullish-day-only gate: entries only on bullish days, BUY side only.
+        # Exits below still run; the gate only suppresses entries.
+        if self._bullish_days_only:
+            bullish_day, day_chg = self._bullish_day_status(system)
+            regime = system.regime_detector.current_regime
+            gate_open = bullish_day and (regime == MarketRegime.TRENDING_UP or not self._bullish_require_regime_up)
+            if self._last_bull_gate is None or gate_open != self._last_bull_gate:
+                logger.info(
+                    "Bullish-day gate %s (nifty %+.2f%% vs prev close, regime=%s)",
+                    "OPEN" if gate_open else "CLOSED", day_chg, regime.name,
+                )
+                self._last_bull_gate = gate_open
+            if not gate_open:
+                signals = []  # exits below still run; entries done for now
+            elif self._bullish_buy_only:
+                before = len(signals)
+                signals = [s for s in signals if s.side == OrderSide.BUY]
+                if len(signals) != before:
+                    logger.debug(
+                        "Bullish-day gate: blocked %d SELL signal(s), BUY only",
+                        before - len(signals),
+                    )
 
         # Execute signals (with per-entry position limit + throttle)
         # Track entries within this cycle to prevent duplicate signals for same symbol

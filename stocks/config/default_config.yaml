@@ -83,6 +83,10 @@ scheduler:
   max_daily_entries: 3                # 2026-09-23: 5→3 hard day budget (was 5; Sep-22 used 4, Sep-23 used 1)
   early_max_positions: 3              # 2026-09-09: before gate time, max 3 fills (first seconds)
   full_access_time: "09:30"           # 2026-09-09: at/after this, remaining slots fill together (change to "09:20" if wanted earlier)
+  bullish_days_only: true           # 2026-10-13: entries only on bullish days (bot wins on bullish days)
+  bullish_day_min_change_pct: 0.2   # Nifty must be up ≥0.2% vs prev close
+  bullish_require_regime_up: true   # ...and intraday regime must be TRENDING_UP
+  bullish_buy_only: true            # on bullish days, BUY entries only (SELL blocked)
   min_expected_profit_pct: 1.0          # Must cover commission + profit
   min_hold_minutes: 15                  # Avoid noise exits
   signal_cooldown_seconds: 600          # 10 min cooldown
